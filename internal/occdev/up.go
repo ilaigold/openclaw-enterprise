@@ -193,7 +193,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	clusterAttempted = true
 	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", "+v1.35")
 	clusterArgs := []string{"cluster", "create", state.Cluster, "--timeout", (time.Duration(timeout) * time.Second).String(), "--env", "IPTABLES_MODE=legacy@server:0"}
-	resolverArgs, err := r.prepareDevelopmentResolver(state)
+	resolverArgs, err := r.prepareDevelopmentResolver(ctx, state)
 	if err != nil {
 		return err
 	}

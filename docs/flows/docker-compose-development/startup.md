@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-04
-last_updated_session: authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76
+updated: 2026-10-06
+last_updated_session: authoring-run/f0bf3787-0e87-43eb-b186-2f9230fdf22e
 ---
 
 # Compose development startup
@@ -192,7 +192,10 @@ validated recorded cluster through its recorded engine endpoint. All other state
 validation and ownership checks still apply.
 
 Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
-without changing host DNS.
+without changing host DNS. Otherwise
+`internal/occdev/network_k3d.go:automaticDevelopmentResolver` gives a Docker
+node the host's upstream resolver on Linux, or on macOS the nameserver of a
+throwaway pinned-K3s container on Docker's default bridge network.
 Linux Docker's automatic host resolver selection ignores trailing nameserver
 fields, matching glibc parsing.
 `internal/occdev/node_dns_k3d.go:checkDevelopmentNodeDNS` fails startup on
@@ -370,6 +373,8 @@ external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 18:19: Gave a macOS Docker k3d node Docker's default-bridge resolver. (authoring-run/f0bf3787-0e87-43eb-b186-2f9230fdf22e - cc44e9845957821c9b9ac952796253e08f8d2dd8)
 
 - 2026-10-04 01:12: Pointed the API startup step at the existing composition function. (authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76 - 7a8a64046ac8ef3e7b5a4ed46b1d4cef9f1573f3)
 
