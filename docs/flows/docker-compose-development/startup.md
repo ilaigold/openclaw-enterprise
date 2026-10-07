@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-06
-last_updated_session: authoring-run/c456de8a-2987-4025-8ed2-a9ad6d70c43b
+updated: 2026-10-07
+last_updated_session: authoring-run/5c63c099-5677-4391-b9eb-6a2d9e4ac947
 ---
 
 # Compose development startup
@@ -89,7 +89,7 @@ custom selection fails before startup is reported successful.
 
 Existing tags are reused even after the runtime recipe changes;
 [rebuild and verify the image](../../../deploy/runtime/README.md#rebuild-an-existing-image)
-to pick up package changes. The runtime recipe owns packaged channel
+to pick them up. The runtime recipe owns packaged channel
 plugins and gateway/Codex compatibility checks; `dev-up` does not install
 missing plugins or verify a model turn.
 
@@ -196,23 +196,19 @@ still apply.
 Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
 without changing host DNS. Otherwise
 `internal/occdev/network_k3d.go:automaticDevelopmentResolver` gives a Docker
-node the host's upstream resolver on Linux. On Docker Desktop for macOS,
-`internal/occdev/node_dns_k3d.go:dockerDesktopBridgeResolver` reads the
-default-bridge nameserver from a throwaway container of the node image (the
-pinned K3s image for a channel), keeping k3d's default on failure or after 45
-seconds.
-Linux Docker's automatic host resolver selection ignores trailing nameserver
-fields, matching glibc parsing.
+node the Linux host's upstream nameserver, ignoring trailing fields as glibc
+does, or Docker Desktop's macOS default-bridge nameserver from
+`internal/occdev/node_dns_k3d.go:dockerDesktopBridgeResolver`, keeping k3d's
+default on failure or after 45 seconds.
 `internal/occdev/node_dns_k3d.go:checkDevelopmentNodeDNS` fails startup on
-refused node DNS. Kubernetes-only startup imports matching OCE images into the
-cluster.
+refused node DNS. Kubernetes-only startup imports matching OCE images into k3d.
 
 Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
 manifests and waits for the k3s-owned Gateway API CRDs before installing Envoy,
 printing k3s add-on status before rollback on failure.
 `internal/occdev/gateway_k3d.go:waitDevelopmentCRDEstablished` polls each CRD every
-second until `Established`, stopping on a `kubectl` error or startup
-timeout. Before configuring gateway proxy trust,
+second until `Established`, a `kubectl` error, or startup timeout. Before
+configuring gateway proxy trust,
 `internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy`
 checks allowed and denied Pod traffic with credential-free Pods and a temporary
 policy, then rechecks the Driver's policies once bootstrap creates the initial
@@ -249,7 +245,7 @@ operator action.
 Without a Sandbox Driver, Kubernetes startup selects Docker or Podman and
 resolves its host socket from Docker's active context or `podman machine inspect`.
 Private state records the socket, Compose project, and `occ-dev-*` cluster.
-Cleanup validates and reuses those records, regardless of later context changes.
+Cleanup validates and reuses those records despite later context changes.
 
 Startup refuses existing cluster or project resources, validates the resolved
 Compose publications through `internal/occdev/compose.go:AnalyzeCompose`, and
@@ -257,10 +253,10 @@ rejects external or unscoped networks and volumes through
 `internal/occdev/up.go:validateResourceOwnership`. It then claims the state
 directory with an exclusive `0700` creation and privately writes the rendered
 Compose snapshot before creating resources. Before saving,
-`setKubernetesBridgeGateway` preserves an explicit development-network gateway
-or derives the first usable address from the rendered subnet, supplying the
-bridge gateway k3d requires even when the operator overrides the subnet. Startup
-and cleanup both use that snapshot, so later `.env` edits cannot change it.
+`setKubernetesBridgeGateway` keeps an explicit development-network gateway or
+derives the rendered subnet's first usable address as k3d's required bridge
+gateway, even for an overridden subnet. Startup
+and cleanup both use that snapshot, ignoring later `.env` edits.
 
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Kubernetes Compute branches
 into `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering, uses the
@@ -348,17 +344,16 @@ the final key file is written exclusively. With OpenShell, startup waits for the
 bootstrap Kubernetes Namespace and for OCC to report it ready, proving the
 Sandbox Driver created or adopted its operator-mode Workspace.
 Namespace readiness and repository discovery bind each OCC request to the
-polling deadline and caller cancellation via `occclient.Client.WithContext`.
-The original client remains available for later startup operations.
+polling deadline and caller cancellation via `occclient.Client.WithContext`,
+leaving the original client for later operations.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to
-`k3d cluster create --timeout`, so a node that never becomes ready fails startup
-instead of waiting indefinitely.
+`k3d cluster create --timeout`, so a node that never becomes ready fails startup.
 
-On failure, startup attempts resource cleanup. Explicit Kubernetes shutdown
+On failure, startup attempts cleanup. Explicit Kubernetes shutdown
 validates the marker, state, and Compose snapshot before using the recorded
 engine endpoint. Cleanup stops the API and worker, then deletes the named k3d
-cluster and Compose project volumes. It continues past individual errors and
+cluster and Compose project volumes. It continues past errors and
 retains state if any step fails; complete cleanup removes the state directory
 and its helper-owned key. A successfully returned external
 `--key-output` file remains operator-owned; startup removes a newly written
@@ -374,7 +369,7 @@ external key if a later OpenShell readiness step fails.
 - `OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 node --test tests/integration/dev-up-openshell-k3d-real.test.mjs`
   selects the Compose-backed real-cluster proof.
 - A successful startup does not prove Agent creation, model credentials, or a
-  model turn. Follow the owning runtime integration procedure for those claims.
+  model turn.
 
 ## Related docs
 
@@ -388,9 +383,7 @@ external key if a later OpenShell readiness step fails.
 
 ## Changelog
 
-- 2026-10-06 20:11: Limited the macOS bridge resolver to Docker Desktop and bounded its probe. (authoring-run/c456de8a-2987-4025-8ed2-a9ad6d70c43b - 1eaed8fb208ae67ed3010be601f13bfccaa8ab1f)
-
-- 2026-10-06 18:19: Gave a macOS Docker k3d node Docker's default-bridge resolver. (authoring-run/f0bf3787-0e87-43eb-b186-2f9230fdf22e - cc44e9845957821c9b9ac952796253e08f8d2dd8)
+- 2026-10-07 09:06: Added the macOS Docker Desktop node resolver. (authoring-run/5c63c099-5677-4391-b9eb-6a2d9e4ac947 - a9dd6b07f91454745bf7c40898b5fd75262707a5)
 
 - 2026-10-05 08:52: Documented bridge-route cancellation and node-inventory context. (authoring-run/cfd0ce95-b6e3-4088-a97b-d6d4c9ff400c - fa8c90b5b6eb3464fcf3af42a7297b5de7d65454)
 

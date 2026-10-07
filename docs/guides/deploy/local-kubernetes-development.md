@@ -378,12 +378,11 @@ the cluster. For a persistent Helm-installed k3d environment, complete the
 
 On Linux Docker, the launcher gives its k3d node the host's first non-loopback
 IPv4 upstream resolver, because k3d's default refuses queries on iptables-nft
-hosts. On Docker Desktop for macOS, where k3d's default drops queries, the node
-gets the resolver Docker gives containers on its default bridge network. Startup
-reads it from a short-lived container of the node image and keeps k3d's default,
-with a warning, if that fails or takes over 45 seconds. Other macOS engines keep
-k3d's default. If the node still cannot resolve image registries, set a DNS
-server reachable from the node network for a fresh startup:
+hosts. On macOS, only Docker Desktop nodes get Docker's default-bridge resolver,
+since k3d's default drops queries there. A short-lived container reads it; a
+failure or 45-second timeout keeps k3d's default with a warning. If the node
+still cannot resolve image registries, set a DNS server reachable from the node
+network for a fresh startup:
 
 ```bash
 OCC_DEVELOPMENT_K3D_DNS_RESOLVER='<reachable-dns-ip>' ./scripts/dev-up
