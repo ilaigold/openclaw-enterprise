@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-06
-last_updated_session: authoring-run/f0bf3787-0e87-43eb-b186-2f9230fdf22e
+last_updated_session: authoring-run/c456de8a-2987-4025-8ed2-a9ad6d70c43b
 ---
 
 # Compose development startup
@@ -194,8 +194,11 @@ validation and ownership checks still apply.
 Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
 without changing host DNS. Otherwise
 `internal/occdev/network_k3d.go:automaticDevelopmentResolver` gives a Docker
-node the host's upstream resolver on Linux, or on macOS the nameserver of a
-throwaway pinned-K3s container on Docker's default bridge network.
+node the host's upstream resolver on Linux. On Docker Desktop for macOS,
+`internal/occdev/node_dns_k3d.go:dockerDesktopBridgeResolver` reads the
+default-bridge nameserver from a throwaway container of the node image (the
+pinned K3s image for a channel), keeping k3d's default on failure or after 45
+seconds.
 Linux Docker's automatic host resolver selection ignores trailing nameserver
 fields, matching glibc parsing.
 `internal/occdev/node_dns_k3d.go:checkDevelopmentNodeDNS` fails startup on
@@ -373,6 +376,8 @@ external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 20:11: Limited the macOS bridge resolver to Docker Desktop and bounded its probe. (authoring-run/c456de8a-2987-4025-8ed2-a9ad6d70c43b - 1eaed8fb208ae67ed3010be601f13bfccaa8ab1f)
 
 - 2026-10-06 18:19: Gave a macOS Docker k3d node Docker's default-bridge resolver. (authoring-run/f0bf3787-0e87-43eb-b186-2f9230fdf22e - cc44e9845957821c9b9ac952796253e08f8d2dd8)
 

@@ -48,14 +48,15 @@ var (
 // On Docker that forwarding fails when the engine writes its DNS rules with
 // iptables-nft, because the node runs iptables in legacy mode, so the node gets
 // an automatic resolver unless the setting selects another address or k3d's default.
-func (r *runner) prepareDevelopmentResolver(ctx context.Context, state *developmentState) ([]string, error) {
+// nodeImage is the image or k3d channel the profile passes to k3d for the node.
+func (r *runner) prepareDevelopmentResolver(ctx context.Context, state *developmentState, nodeImage string) ([]string, error) {
 	value := r.env["OCC_DEVELOPMENT_K3D_DNS_RESOLVER"]
 	if value == developmentResolverK3dDefault {
 		return nil, nil
 	}
 	if value == "" {
 		var origin string
-		value, origin = r.automaticDevelopmentResolver(ctx)
+		value, origin = r.automaticDevelopmentResolver(ctx, nodeImage)
 		if value == "" {
 			return nil, nil
 		}
@@ -80,8 +81,9 @@ func (r *runner) prepareDevelopmentResolver(ctx context.Context, state *developm
 // default. Linux Docker uses the host's upstream resolver, where k3d's gateway
 // refuses queries on iptables-nft hosts. On macOS, Docker Desktop's gateway
 // drops them, and the Mac's own resolvers may be reachable only from the host,
-// so the node gets the resolver Docker gives containers on its default bridge.
-func (r *runner) automaticDevelopmentResolver(ctx context.Context) (address, origin string) {
+// so a Docker Desktop node gets the resolver Docker gives containers on its
+// default bridge. Other macOS Docker engines keep k3d's default.
+func (r *runner) automaticDevelopmentResolver(ctx context.Context, nodeImage string) (address, origin string) {
 	if r.engine != "docker" {
 		return "", ""
 	}
@@ -89,7 +91,7 @@ func (r *runner) automaticDevelopmentResolver(ctx context.Context) (address, ori
 	case "linux":
 		return hostUpstreamResolver(readHostResolverFile), "this host's upstream"
 	case "darwin":
-		return r.dockerBridgeResolver(ctx), "Docker's default-bridge"
+		return r.dockerDesktopBridgeResolver(ctx, nodeImage), "Docker Desktop's default-bridge"
 	}
 	return "", ""
 }

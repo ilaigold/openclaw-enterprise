@@ -165,8 +165,8 @@ func prepareResolver(t *testing.T, engine string, env map[string]string) (*runne
 	t.Helper()
 	state := &developmentState{directory: t.TempDir()}
 	var out bytes.Buffer
-	r := &runner{engine: engine, env: env, opts: Options{Out: &out}}
-	args, err := r.prepareDevelopmentResolver(context.Background(), state)
+	r := &runner{engine: engine, env: env, opts: Options{Out: &out, Err: io.Discard}}
+	args, err := r.prepareDevelopmentResolver(context.Background(), state, openShellK3sImage)
 	resolvConf, _ := os.ReadFile(filepath.Join(state.directory, "node-resolv.conf"))
 	return r, args, string(resolvConf), out.String(), err
 }
@@ -255,22 +255,48 @@ nameserver 192.168.65.7
 # Overrides: []
 `
 
-func TestPrepareDevelopmentResolverUsesDockerBridgeResolverOnMacOS(t *testing.T) {
+func TestPrepareDevelopmentResolverUsesDockerDesktopBridgeResolverOnMacOS(t *testing.T) {
 	// On Docker Desktop, k3d's default node resolver (the host gateway) drops
 	// queries and every image pull times out. The Mac's own resolver, here a VPN
 	// address, may be reachable only from the host, so it must not be used.
 	macResolver := map[string]string{"/etc/resolv.conf": "nameserver 198.51.100.53\n"}
-	bridgeProbe := `"run --rm --network bridge --entrypoint cat ` + openShellK3sImage + ` /etc/resolv.conf")`
-
-	t.Run("Docker uses the default-bridge resolver", func(t *testing.T) {
-		hostResolverFiles(t, "darwin", macResolver)
-		fakeEngine(t, "docker", bridgeProbe+` printf '%s' "`+dockerDesktopBridgeResolvConf+`" ;;
-`)
-		r, args, resolvConf, out, err := prepareResolver(t, "docker", map[string]string{})
+	const composeNodeImage = "docker.io/rancher/k3s:v1.35.8-k3s1"
+	dockerDesktop := `"info --format {{.OperatingSystem}}") echo 'Docker Desktop' ;;
+`
+	bridgeProbe := func(image string) string {
+		return `"run --rm --network bridge --entrypoint cat ` + image + ` /etc/resolv.conf")`
+	}
+	answersProbe := func(image string) string {
+		return bridgeProbe(image) + ` printf '%s' "` + dockerDesktopBridgeResolvConf + `" ;;
+`
+	}
+	// prepare selects the resolver for a profile whose k3d node image is
+	// nodeImage and returns the runner, its cluster arguments, the node
+	// resolv.conf it wrote (if any), stdout, and stderr.
+	prepare := func(t *testing.T, nodeImage string, env map[string]string) (*runner, []string, string, string, string) {
+		t.Helper()
+		state := &developmentState{directory: t.TempDir()}
+		var out, warnings bytes.Buffer
+		r := &runner{engine: "docker", env: env, opts: Options{Out: &out, Err: &warnings}}
+		args, err := r.prepareDevelopmentResolver(context.Background(), state, nodeImage)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out, "Docker's default-bridge DNS resolver 192.168.65.7") {
+		resolvConf, _ := os.ReadFile(filepath.Join(state.directory, "node-resolv.conf"))
+		return r, args, string(resolvConf), out.String(), warnings.String()
+	}
+	keptK3dDefault := func(t *testing.T, r *runner, args []string) {
+		t.Helper()
+		if len(args) != 0 || r.env["K3D_FIX_DNS"] != "" || r.automaticNodeResolver != "" {
+			t.Fatalf("unexpected resolver change: %q %+v", args, r.env)
+		}
+	}
+
+	t.Run("Docker Desktop uses the default-bridge resolver", func(t *testing.T) {
+		hostResolverFiles(t, "darwin", macResolver)
+		fakeEngine(t, "docker", dockerDesktop+answersProbe(openShellK3sImage))
+		r, args, resolvConf, out, warnings := prepare(t, openShellK3sImage, map[string]string{})
+		if !strings.Contains(out, "Docker Desktop's default-bridge DNS resolver 192.168.65.7") {
 			t.Fatalf("startup did not say which resolver it chose: %q", out)
 		}
 		if len(args) != 2 || args[0] != "--volume" || !strings.HasSuffix(args[1], ":/etc/resolv.conf:ro@server:0") {
@@ -279,18 +305,88 @@ func TestPrepareDevelopmentResolverUsesDockerBridgeResolverOnMacOS(t *testing.T)
 		if resolvConf != "nameserver 192.168.65.7\n" {
 			t.Fatalf("unexpected node resolv.conf: %q", resolvConf)
 		}
-		if r.env["K3D_FIX_DNS"] != "false" || r.automaticNodeResolver != "192.168.65.7" {
-			t.Fatalf("automatic resolver not recorded: %q %q", r.env["K3D_FIX_DNS"], r.automaticNodeResolver)
+		if r.env["K3D_FIX_DNS"] != "false" || r.automaticNodeResolver != "192.168.65.7" || warnings != "" {
+			t.Fatalf("automatic resolver not recorded: %q %q %q", r.env["K3D_FIX_DNS"], r.automaticNodeResolver, warnings)
+		}
+	})
+
+	// The probe must pull nothing a fresh Mac would not pull for the cluster
+	// anyway. The fake engine answers only the expected image, so a probe of
+	// any other image fails and keeps k3d's default.
+	for _, test := range []struct {
+		name, nodeImage, probeImage string
+	}{
+		{"the probe runs the Compose profile's node image", composeNodeImage, composeNodeImage},
+		{"a k3d channel, which Docker cannot run, probes with the pinned image", "+v1.35", openShellK3sImage},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hostResolverFiles(t, "darwin", macResolver)
+			fakeEngine(t, "docker", dockerDesktop+answersProbe(test.probeImage))
+			r, _, _, out, warnings := prepare(t, test.nodeImage, map[string]string{})
+			if r.automaticNodeResolver != "192.168.65.7" || warnings != "" {
+				t.Fatalf("probe did not use %s: %q %q", test.probeImage, r.automaticNodeResolver, warnings)
+			}
+			if !strings.Contains(out, "throwaway "+test.probeImage+" container") {
+				t.Fatalf("startup did not name the probe image: %q", out)
+			}
+		})
+	}
+
+	// Only Docker Desktop's gateway is known to drop node DNS. Other macOS
+	// engines keep k3d's default without running a probe container, which the
+	// fake engine would refuse.
+	for _, system := range []string{"OrbStack", "Ubuntu 24.04.3 LTS"} {
+		t.Run(system+" keeps k3d's default", func(t *testing.T) {
+			hostResolverFiles(t, "darwin", macResolver)
+			fakeEngine(t, "docker", `"info --format {{.OperatingSystem}}") echo '`+system+`' ;;
+`)
+			r, args, _, out, warnings := prepare(t, openShellK3sImage, map[string]string{})
+			keptK3dDefault(t, r, args)
+			if out != "" || warnings != "" {
+				t.Fatalf("unexpected output: %q %q", out, warnings)
+			}
+		})
+	}
+
+	t.Run("an explicit resolver or k3d skips the probe", func(t *testing.T) {
+		hostResolverFiles(t, "darwin", macResolver)
+		fakeEngine(t, "docker", "")
+		r, args, _, out, warnings := prepare(t, openShellK3sImage, map[string]string{"OCC_DEVELOPMENT_K3D_DNS_RESOLVER": "k3d"})
+		keptK3dDefault(t, r, args)
+		_, _, resolvConf, explicitOut, explicitWarnings := prepare(t, openShellK3sImage, map[string]string{"OCC_DEVELOPMENT_K3D_DNS_RESOLVER": "192.0.2.53"})
+		if resolvConf != "nameserver 192.0.2.53\n" || out+warnings+explicitOut+explicitWarnings != "" {
+			t.Fatalf("explicit resolver not kept: %q %q %q", resolvConf, out+explicitOut, warnings+explicitWarnings)
 		}
 	})
 
 	t.Run("a probe container that cannot run keeps k3d's default", func(t *testing.T) {
 		hostResolverFiles(t, "darwin", macResolver)
-		fakeEngine(t, "docker", bridgeProbe+` echo 'Cannot connect to the Docker daemon' >&2; exit 125 ;;
+		fakeEngine(t, "docker", dockerDesktop+bridgeProbe(openShellK3sImage)+` echo 'Cannot connect to the Docker daemon' >&2; exit 125 ;;
 `)
-		r, args, _, _, err := prepareResolver(t, "docker", map[string]string{})
-		if err != nil || len(args) != 0 || r.env["K3D_FIX_DNS"] != "" || r.automaticNodeResolver != "" {
-			t.Fatalf("unexpected resolver change: %v %q %+v", err, args, r.env)
+		r, args, _, _, warnings := prepare(t, openShellK3sImage, map[string]string{})
+		keptK3dDefault(t, r, args)
+		if !strings.Contains(warnings, "keeping k3d's default") || strings.Contains(warnings, "Cannot connect") {
+			t.Fatalf("unexpected warning: %q", warnings)
+		}
+	})
+
+	t.Run("a probe that hangs times out and keeps k3d's default", func(t *testing.T) {
+		// A wedged engine or a stalled first pull must not hold startup
+		// before cluster creation.
+		previous := dockerDesktopProbeTimeout
+		dockerDesktopProbeTimeout = 200 * time.Millisecond
+		t.Cleanup(func() { dockerDesktopProbeTimeout = previous })
+		hostResolverFiles(t, "darwin", macResolver)
+		fakeEngine(t, "docker", dockerDesktop+bridgeProbe(openShellK3sImage)+` exec /bin/sleep 30 ;;
+`)
+		started := time.Now()
+		r, args, _, _, warnings := prepare(t, openShellK3sImage, map[string]string{})
+		if elapsed := time.Since(started); elapsed > 10*time.Second {
+			t.Fatalf("probe was not bounded: %s", elapsed)
+		}
+		keptK3dDefault(t, r, args)
+		if !strings.Contains(warnings, "timed out after 200ms") || !strings.Contains(warnings, "OCC_DEVELOPMENT_K3D_DNS_RESOLVER") {
+			t.Fatalf("timeout not reported: %q", warnings)
 		}
 	})
 }
@@ -331,7 +427,7 @@ func TestPrepareDevelopmentResolverPreservesNameserversWithTrailingComments(t *t
 				hostResolverFiles(t, "linux", files)
 				state := &developmentState{directory: t.TempDir()}
 				r := &runner{engine: "docker", env: map[string]string{}, opts: Options{Out: io.Discard}}
-				args, err := r.prepareDevelopmentResolver(context.Background(), state)
+				args, err := r.prepareDevelopmentResolver(context.Background(), state, openShellK3sImage)
 				if err != nil {
 					t.Fatal(err)
 				}
