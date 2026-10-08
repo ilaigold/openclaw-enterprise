@@ -18,6 +18,8 @@ import type {
   SandboxDriver,
   SandboxHarnessEndpoint,
   SandboxHarnessContext,
+  SandboxHarnessStatus,
+  SandboxHarnessStatusContext,
   SandboxLogChunk,
   SandboxLogContext,
   SandboxLogRequest,
@@ -363,6 +365,9 @@ function environment(
   result.OPENCLAW_WORKSPACE_DIR = workspacePath;
   return result;
 }
+
+// Served by a Codex Harness wrapper that holds a startup failure (runtime-entrypoints.ts).
+const HARNESS_RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
 
 function harnessPort(requirements: HarnessWorkloadRequirements): number {
   const entry = requirements.environment.find(
@@ -1592,15 +1597,30 @@ function canonicalProtobufValues(value: unknown): unknown {
   );
 }
 
+/**
+ * Decoding with `oneofs: true` adds a virtual `_field` property naming each set proto3
+ * `optional` field, for example `_user_namespaces: "user_namespaces"`. A request never
+ * carries those markers, so they are not Sandbox content.
+ */
+function withoutSyntheticOneofs(
+  record: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(record).filter(
+      ([key, value]) => !(key.startsWith("_") && value === key.slice(1)),
+    ),
+  );
+}
+
 function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | undefined): unknown {
   const template = asRecord(spec?.template);
   if (spec === undefined || template === undefined) {
     return spec;
   }
   return {
-    ...spec,
+    ...withoutSyntheticOneofs(spec),
     template: {
-      ...template,
+      ...withoutSyntheticOneofs(template),
       driver_config: canonicalProtobufValues(template.driver_config),
     },
   };
@@ -2028,7 +2048,50 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {
-    this.requireOperatorWorkspaceMode("resolve a Harness endpoint");
+    const { service } = await this.exactHarnessService(context, "resolve a Harness endpoint");
+    return Object.freeze({
+      url: harnessWebSocketUrl(service.advertisedUrl),
+      workspaceRoot: "/sandbox/enterprise",
+    });
+  }
+
+  /**
+   * Observes the Codex Harness through its bearer-passthrough exposure, as the Agent Gateway
+   * reaches it. A Harness holding a startup failure (for example a failed model probe) serves
+   * that failure on the app-server port in place of Codex; a serving Codex app-server completes
+   * the authenticated WebSocket handshake. Anything else, including OpenShell's own `502` while
+   * nothing listens, is still starting.
+   */
+  async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
+    const { client, service } = await this.exactHarnessService(context, "observe a Harness");
+    // Handshake first, so a serving app-server never receives a plain request. A
+    // Harness wrapper holding a startup failure refuses the upgrade and serves the
+    // failure instead.
+    if (
+      await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)
+    ) {
+      return Object.freeze({ state: "serving" });
+    }
+    const document = await client.getServiceDocument(
+      service.url,
+      HARNESS_RUNTIME_STATUS_PATH,
+      context.transportToken,
+      context.signal,
+    );
+    const runtimeFailure = asRecord(document.json)?.runtimeFailure;
+    return document.status === 200 && runtimeFailure !== undefined
+      ? Object.freeze({ state: "failed", runtimeFailure })
+      : Object.freeze({ state: "starting" });
+  }
+
+  private async exactHarnessService(
+    context: SandboxHarnessContext,
+    operation: string,
+  ): Promise<{
+    readonly client: OpenShellGatewayClient;
+    readonly service: NonNullable<Awaited<ReturnType<OpenShellGatewayClient["getService"]>>>;
+  }> {
+    this.requireOperatorWorkspaceMode(operation);
     if (context.revision.harness.mode !== "dedicated" || context.revision.harness.id !== "codex") {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
@@ -2057,10 +2120,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell did not expose the exact Codex bearer-passthrough service.",
       );
     }
-    return Object.freeze({
-      url: harnessWebSocketUrl(service.advertisedUrl),
-      workspaceRoot: "/sandbox/enterprise",
-    });
+    return { client, service };
   }
 
   async cleanup(
