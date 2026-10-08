@@ -389,6 +389,27 @@ func TestPrepareDevelopmentResolverUsesDockerDesktopBridgeResolverOnMacOS(t *tes
 			t.Fatalf("timeout not reported: %q", warnings)
 		}
 	})
+
+	// An empty, IPv6-only, or loopback resolv.conf is a failed probe. Returning
+	// "" with a nil error would keep k3d's default and skip the warning.
+	for _, test := range []struct {
+		name, resolvConf string
+	}{
+		{"IPv6 only", "nameserver 2001:db8::53"},
+		{"loopback", "nameserver 127.0.0.11"},
+		{"empty", "# empty"},
+	} {
+		t.Run(test.name+" nameserver warns and keeps k3d's default", func(t *testing.T) {
+			hostResolverFiles(t, "darwin", macResolver)
+			fakeEngine(t, "docker", dockerDesktop+bridgeProbe(openShellK3sImage)+` printf '%s\n' '`+test.resolvConf+`' ;;
+`)
+			r, args, _, _, warnings := prepare(t, openShellK3sImage, map[string]string{})
+			keptK3dDefault(t, r, args)
+			if !strings.Contains(warnings, "no usable IPv4 nameserver") || !strings.Contains(warnings, "keeping k3d's default") || !strings.Contains(warnings, "OCC_DEVELOPMENT_K3D_DNS_RESOLVER") {
+				t.Fatalf("missing warning: %q", warnings)
+			}
+		})
+	}
 }
 
 func TestCheckDevelopmentNodeDNSNamesTheAutomaticResolver(t *testing.T) {

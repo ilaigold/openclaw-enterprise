@@ -173,7 +173,11 @@ func (r *runner) probeDockerDesktopBridgeResolver(ctx context.Context, nodeImage
 	if err != nil {
 		return "", err
 	}
-	return firstUpstreamNameserver(data), nil
+	address := firstUpstreamNameserver(data)
+	if address == "" {
+		return "", errors.New("probe resolv.conf has no usable IPv4 nameserver")
+	}
+	return address, nil
 }
 
 func firstUpstreamNameserver(resolvConf []byte) string {
