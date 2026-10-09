@@ -1111,6 +1111,44 @@ test("Kubernetes-only dev-up stops and rolls back when the node resolver refuses
   ]);
 });
 
+test("Kubernetes-only dev-up on macOS Docker Desktop mounts the bridge resolver and rolls back when it refuses DNS", async (t) => {
+  const fixture = await kubernetesFixture(t, "node-dns-refused", macOS);
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "none";
+  fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";
+  fixture.env.DEV_UP_EXISTING_RUNTIME_IMAGE = "1";
+  delete fixture.env.OCC_DEVELOPMENT_K3D_DNS_RESOLVER;
+  fixture.env.DEV_UP_DOCKER_OPERATING_SYSTEM = "Docker Desktop";
+  fixture.env.DEV_UP_BRIDGE_RESOLV_CONF = "192.168.65.7";
+  const result = runDevUp([], fixture.env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /Docker Desktop's default-bridge DNS resolver 192\.168\.65\.7/);
+  assert.match(result.stderr, /Docker Desktop's default-bridge resolver 192\.168\.65\.7/);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  const probeAt = commands.findIndex(
+    (entry) =>
+      entry.command === "docker" &&
+      entry.args[0] === "run" &&
+      entry.args.at(-1) === "/etc/resolv.conf",
+  );
+  const createAt = commands.findIndex(
+    (entry) => entry.command === "k3d" && entry.args[0] === "cluster" && entry.args[1] === "create",
+  );
+  assert.ok(probeAt >= 0 && createAt > probeAt);
+  assert.match(commands[probeAt].args.at(-2), /^docker\.io\/rancher\/k3s:/);
+  assert.ok(
+    commands[createAt].args.some((argument) => argument.endsWith(":/etc/resolv.conf:ro@server:0")),
+  );
+  assert.equal(
+    commands.some((entry) => entry.command === "k3d" && entry.args[0] === "image"),
+    false,
+  );
+  await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")).clusters, [
+    "occ-dev-unrelated",
+  ]);
+});
+
 test("Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry", async (t) => {
   const fixture = await kubernetesFixture(t, "cluster-delete-failed");
   const started = fixture.start();
