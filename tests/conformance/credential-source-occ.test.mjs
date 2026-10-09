@@ -1050,7 +1050,7 @@ for (const [failure, gatewayOptions] of [
   });
 }
 
-test("withdrawal is recorded for the active revision and queued for the worker once", async () => {
+test("withdrawal is recorded for the active revision and queued once, and the read prefers a stalled successor withdrawal", async () => {
   const {
     controller,
     dedicatedAgent,
@@ -1142,6 +1142,30 @@ test("withdrawal is recorded for the active revision and queued for the worker o
     controller.deleteCredentialSource(administrator, namespace.id, source.id),
     ResourceConflictError,
   );
+
+  // A later deployment's pending withdrawal with no attempt outstanding, as exhausted attempts
+  // leave it (memory never runs work, so it is recorded without any), needs a replay. The read
+  // reports it ahead of the active revision's withdrawal, whose attempt is still outstanding.
+  const successor = await controller.deployAgent(
+    administrator,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+  await controller.transact((unit) =>
+    unit.credentialSources.requestCredentialWithdrawal({
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      revisionId: successor.id,
+      credentialSourceId: source.id,
+      state: "pending",
+      requestedBy: administrator,
+      requestedAt: new Date().toISOString(),
+    }),
+  );
+  const stalled = await controller.readAgentCredentialWithdrawal(administrator, request);
+  assert.equal(stalled.revisionId, successor.id);
+  assert.equal(stalled.state, "pending");
+  assert.equal(stalled.withdrawalInProgress, false);
 });
 
 test("withdrawal also covers each admitted successor revision that holds the source", async () => {
@@ -1235,24 +1259,45 @@ test("withdrawal also covers each admitted successor revision that holds the sou
   assert.equal(read.revisionId, second.id);
   assert.equal(read.state, "pending");
 
-  // A revoked withdrawal on the active revision still reaches a later successor.
-  await controller.transact((unit) =>
-    unit.credentialSources.markCredentialWithdrawalRevoked(
-      namespace.id,
-      second.id,
-      registry.id,
-      new Date().toISOString(),
-    ),
-  );
+  // A revoked withdrawal on the active revision still reaches a later successor, and the
+  // response reports that successor's pending withdrawal instead of the revoked one. (The
+  // in-memory store never retires the first revision, so its withdrawal is revoked here too.)
+  for (const revision of [first, second]) {
+    await controller.transact((unit) =>
+      unit.credentialSources.markCredentialWithdrawalRevoked(
+        namespace.id,
+        revision.id,
+        registry.id,
+        new Date().toISOString(),
+      ),
+    );
+  }
   await bind([{ sourceId: model.id }, { sourceId: registry.id }]);
   const fourth = await deploy();
   const replay = await controller.withdrawAgentCredentialSource(administrator, request);
-  assert.equal(replay.revisionId, second.id);
-  assert.equal(replay.state, "revoked");
+  assert.equal(replay.revisionId, fourth.id);
+  assert.equal(replay.state, "pending");
+  assert.equal(replay.withdrawalInProgress, true);
   const [laterRow] = await rows(fourth);
   assert.equal(laterRow.state, "pending");
   assert.equal(workFor(fourth).length, 1);
   assert.deepEqual(await rows(third), []);
+  const pendingRead = await controller.readAgentCredentialWithdrawal(administrator, request);
+  assert.equal(pendingRead.revisionId, fourth.id);
+  assert.equal(pendingRead.withdrawalInProgress, true);
+
+  // Once every revision that may run with the source confirmed it, the active one is reported.
+  await controller.transact((unit) =>
+    unit.credentialSources.markCredentialWithdrawalRevoked(
+      namespace.id,
+      fourth.id,
+      registry.id,
+      new Date().toISOString(),
+    ),
+  );
+  const revokedRead = await controller.readAgentCredentialWithdrawal(administrator, request);
+  assert.equal(revokedRead.revisionId, second.id);
+  assert.equal(revokedRead.state, "revoked");
 });
 
 test("deploy admission freezes the source and requires the Agent principal to operate it", async () => {
