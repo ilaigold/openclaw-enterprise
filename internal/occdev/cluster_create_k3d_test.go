@@ -178,7 +178,7 @@ func TestK3dCreateErrorHint(t *testing.T) {
 		{
 			// k3d quotes a fatal node log line in a warning before it retries.
 			name: "node log names the nat table after a confirmed preflight",
-			output: `WARN[0012] warning: encountered fatal log from node k3d-occ-dev-test-server-0 (retrying 0/10): time="2026-10-10T19:40:02Z" level=fatal msg="can't initialize iptables table 'nat': Table does not exist (do you need to insmod?)"` + "\n" +
+			output: `WARN[0012] warning: encountered fatal log from node k3d-occ-dev-test-server-0 (retrying 0/10): time="2026-10-10T19:40:02Z" level=fatal msg="iptables v1.8.10 (legacy): can't initialize iptables table ` + "`nat'" + `: Table does not exist (do you need to insmod?)"` + "\n" +
 				`ERRO[0040] Failed Cluster Start: Failed to start server k3d-occ-dev-test-server-0: Node k3d-occ-dev-test-server-0 failed to get ready: error waiting for log line ` + "`k3s is up and running`" + ` from node 'k3d-occ-dev-test-server-0': stopped returning log lines: node k3d-occ-dev-test-server-0 is running=false in status=exited` + "\n" + k3dRollbackLines,
 			line: "ERRO[0040] Failed Cluster Start: Failed to start server k3d-occ-dev-test-server-0: Node k3d-occ-dev-test-server-0 failed to get ready: error waiting for log line `k3s is up and running` from node 'k3d-occ-dev-test-server-0': stopped returning log lines: node k3d-occ-dev-test-server-0 is running=false in status=exited",
 			want: []string{natHint}, absent: []string{unconfirmed, channelHint},
