@@ -90,11 +90,16 @@ a successful revision does not confirm that a third-party connector is usable.
 ## An OpenShell Agent stops answering
 
 On OpenShell, OCE asks the gateway to restart the Harness whenever its process
-exits. `occ agent runtime AGENT_ID` shows `Harness Sandbox: starting` for the few
-seconds this takes, then `running`; chat usually answers again within a minute. A Harness that keeps exiting stays `starting` while OpenShell backs off
-(up to three minutes between attempts); read the [Sandbox
-logs](agent-logs.md#sandbox-source). A version deployed by an older controller
-keeps the old behavior until the Agent is deployed again.
+exits. `occ agent runtime AGENT_ID` shows
+`Harness Sandbox: starting (HARNESS_RESTARTING, last exit code N, restart N)` for
+the few seconds this takes, then `running`; chat usually answers again within a
+minute. A plain `starting`, with no code, is a first start. A Harness that keeps
+exiting stays `HARNESS_RESTARTING` with a growing restart number while OpenShell
+backs off (up to three minutes between attempts), and the version's diagnostics
+lead with a failed `agent` `sandbox` check with that code. An exit code above 128
+is a signal, such as 137 for a killed process. Read the [Sandbox
+logs](agent-logs.md#sandbox-source) for the cause. A version deployed by an older
+controller keeps the old behavior until the Agent is deployed again.
 
 OCE does not replace a Sandbox whose Pod was deleted or evicted. The Agent stays
 `active` while every chat fails, `occ agent runtime` starts with

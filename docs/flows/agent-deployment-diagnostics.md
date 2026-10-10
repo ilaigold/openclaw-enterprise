@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
 updated: 2026-10-10
-last_updated_session: fix-1027
+last_updated_session: fix-1043
 ---
 
 # Agent deployment diagnostics flow
@@ -98,9 +98,10 @@ revision's Sandbox Driver for its record of a dedicated Harness Sandbox
 (`observeHarness`, bounded at ten seconds). The result leads the list as an
 `agent` `sandbox` check: `succeeded` while the Sandbox runs, `failed` with a code
 such as `SANDBOX_FAILED` or `HARNESS_EXITED` once it can no longer serve the
-revision, and `unknown` while it starts (code `STARTING`), when the record is
-unreadable (`UNAVAILABLE`), or when a revision that is not the running Agent's
-active one has no Sandbox, such as a stopped Agent's.
+revision, `failed` with `HARNESS_RESTARTING` while OpenShell restarts a Harness
+process that exited, and `unknown` on a first start (code `STARTING`), when the
+record is unreadable (`UNAVAILABLE`), or when a revision that is not the running
+Agent's active one has no Sandbox, such as a stopped Agent's.
 
 ### 3. Return validated evidence
 
@@ -124,6 +125,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 - On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
   its health; the `agent` `sandbox` check does. A failed one means the Sandbox
   is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
+  A failed `HARNESS_RESTARTING` check instead means the Harness process keeps
+  exiting while OpenShell restarts it; its Sandbox logs show why.
   A failed deployment's status names the held failure's code and cause, such as
   `RUNTIME_MODEL_PROBE_FAILED`. The
   [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
@@ -145,6 +148,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 18:30: Report a Harness that OpenShell is restarting as `HARNESS_RESTARTING`. (fix-1043)
 
 - 2026-10-10 15:30: Lead OpenShell diagnostics with the Harness Sandbox lifecycle check. (fix-1027)
 

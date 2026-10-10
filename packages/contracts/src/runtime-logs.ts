@@ -107,10 +107,15 @@ export interface AgentRuntimeLogSource {
   readonly retention: string;
 }
 
-/** A provider-owned Harness Sandbox as its Sandbox Driver records it; `unknown` when unreadable. */
+/**
+ * A provider-owned Harness Sandbox as its Sandbox Driver records it; `unknown` when unreadable.
+ * `HARNESS_RESTARTING` (state `starting`) carries the last exit code and the restart number.
+ */
 export interface AgentRuntimeHarnessStatus {
   readonly state: "running" | "starting" | "lost" | "unknown";
-  readonly code?: SandboxHarnessLostCode | "UNAVAILABLE";
+  readonly code?: SandboxHarnessLostCode | "HARNESS_RESTARTING" | "UNAVAILABLE";
+  readonly exitCode?: number;
+  readonly restarts?: number;
 }
 
 export interface AgentRuntimeDescription {
