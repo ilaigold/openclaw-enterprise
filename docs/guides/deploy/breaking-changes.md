@@ -25,7 +25,7 @@ cannot start inside OpenShell.
 **Who is affected.** Dedicated Codex Agents on the
 [OpenShell Sandbox Driver](../../reference/drivers/openshell-sandbox.md) whose
 active revision was admitted before #2079 (`66ea9bed5`, 2026-10-10). Other
-Harnesses are not affected.
+Harnesses are not affected by the `bwrap` failure.
 
 **How to tell.** Every shell command in the Agent's chats fails with that
 `bwrap` message.
@@ -37,10 +37,11 @@ every running Agent. The new revision uses the Agent's current Configuration
 draft. If commands still fail, check `tools.exec`
 ([OpenShell credential sources](openshell-credential-sources.md)). _untested_
 
-Deploying again also picks up the restart policy from #2084 (`db3c97bae`), for
-every Harness: OpenShell restarts a Harness that exits. A Sandbox created earlier
-keeps its old policy, which OpenShell cannot change in place, so its Harness
-stays down after an exit until the Agent is deployed again.
+**Restart policy.** A controller at `db3c97bae` (#2084) or later also has
+OpenShell restart any Harness whose process exits. A Sandbox created before
+#2084 keeps restart policy `NEVER`, which OpenShell cannot change in place, so
+deploy every OpenShell Agent whose Sandbox predates #2084 again too
+([An OpenShell Agent stops answering](../topics/agent-troubleshoot.md#an-openshell-agent-stops-answering)).
 
 ## 2026-10-10: Gateway listener settings are checked before deployment
 
