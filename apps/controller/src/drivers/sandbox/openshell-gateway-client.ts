@@ -261,7 +261,26 @@ export function openShellSandboxLogReader(
   });
 }
 
-export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
+export interface OpenShellSandboxObserver {
+  getSandbox(
+    request: OpenShellSandboxDeleteRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxResponse | undefined>;
+}
+
+/** Narrows a gateway client to its Sandbox record read; the result exposes nothing else. */
+export function openShellSandboxObserver(
+  client: OpenShellSandboxObserver,
+): OpenShellSandboxObserver {
+  const read = client.getSandbox.bind(client);
+  return Object.freeze({
+    getSandbox: (request: OpenShellSandboxDeleteRequest, signal: AbortSignal) =>
+      read(request, signal),
+  });
+}
+
+export interface OpenShellGatewayClient
+  extends OpenShellSandboxLogReader, OpenShellSandboxObserver {
   health(signal: AbortSignal): Promise<void>;
   getWorkspace(name: string, signal: AbortSignal): Promise<OpenShellWorkspaceResponse | undefined>;
   createWorkspace(

@@ -18,6 +18,7 @@ import type {
   SandboxDriver,
   SandboxHarnessEndpoint,
   SandboxHarnessContext,
+  SandboxHarnessObservation,
   SandboxHarnessStatus,
   SandboxHarnessStatusContext,
   SandboxLogChunk,
@@ -25,6 +26,7 @@ import type {
   SandboxLogRequest,
   SandboxNamespaceContext,
   SandboxResourceRef,
+  SandboxHarnessLostCode,
 } from "@openclaw-enterprise/contracts";
 import {
   isOpenShellProviderName,
@@ -33,6 +35,7 @@ import {
 } from "../../backends/openshell.ts";
 import {
   openShellSandboxLogReader,
+  openShellSandboxObserver,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
@@ -428,6 +431,53 @@ const STOPPED_SANDBOX_PHASES: ReadonlySet<string | number> = new Set([
   7,
   9,
 ]);
+
+// GetSandbox phases, by enum name and number, of a Sandbox that no longer serves its
+// revision. ERROR covers a deleted or evicted Pod and a failed Harness main process;
+// COMPLETED is a Harness main process that exited 0 while the supervisor stays up.
+const LOST_SANDBOX_PHASES: ReadonlyMap<string | number, SandboxHarnessLostCode> = new Map<
+  string | number,
+  SandboxHarnessLostCode
+>([
+  ["SANDBOX_PHASE_ERROR", "SANDBOX_FAILED"],
+  [3, "SANDBOX_FAILED"],
+  ["SANDBOX_PHASE_DELETING", "SANDBOX_DELETING"],
+  [4, "SANDBOX_DELETING"],
+  ["SANDBOX_PHASE_STOPPING", "SANDBOX_STOPPED"],
+  [6, "SANDBOX_STOPPED"],
+  ["SANDBOX_PHASE_STOPPED", "SANDBOX_STOPPED"],
+  [7, "SANDBOX_STOPPED"],
+  ["SANDBOX_PHASE_COMPLETED", "HARNESS_EXITED"],
+  [9, "HARNESS_EXITED"],
+]);
+const STARTING_SANDBOX_PHASES: ReadonlySet<string | number> = new Set([
+  "SANDBOX_PHASE_PROVISIONING",
+  1,
+  "SANDBOX_PHASE_STARTING",
+  8,
+]);
+
+/**
+ * Maps the revision's own GetSandbox record (or its absence) to a Harness observation.
+ * OpenShell also answers NOT_FOUND to conceal a Sandbox from an identity outside its
+ * Workspace, so `SANDBOX_MISSING` covers a Workspace OCC can no longer read.
+ */
+export function harnessObservation(
+  sandbox: { readonly phase?: string | number } | undefined,
+): SandboxHarnessObservation {
+  if (sandbox === undefined) {
+    return Object.freeze({ state: "lost", code: "SANDBOX_MISSING" });
+  }
+  const phase = sandbox.phase ?? "";
+  const lost = LOST_SANDBOX_PHASES.get(phase);
+  if (lost !== undefined) {
+    return Object.freeze({ state: "lost", code: lost });
+  }
+  if (phase === "SANDBOX_PHASE_READY" || phase === 2) {
+    return Object.freeze({ state: "running" });
+  }
+  return Object.freeze({ state: STARTING_SANDBOX_PHASES.has(phase) ? "starting" : "unknown" });
+}
 
 // OpenShell keeps a request_id whose create errored server-side unresolved forever, so a
 // revision's create moves to its next request_id once the gateway refuses the current one
@@ -2308,6 +2358,40 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       lines: response.lines,
       bufferTotal: response.bufferTotal,
     });
+  }
+
+  /**
+   * Reads the dedicated revision's own Sandbox record without touching it. Only the
+   * gateway's lifecycle phase is used; the Harness transport is not contacted.
+   */
+  async observeHarness(context: SandboxLogContext): Promise<SandboxHarnessObservation> {
+    this.requireOperatorWorkspaceMode("observe a Harness");
+    if (
+      context.revision.namespaceId !== context.namespace.id ||
+      context.revision.sandboxDriverId !== this.id ||
+      context.revision.harness.mode !== "dedicated"
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Refusing to observe a Sandbox outside its selected dedicated AgentRevision and Namespace.",
+      );
+    }
+    const sandbox = this.sandboxRef(context);
+    // Only the phase and the ownership annotation of the record are used.
+    const existing = await openShellSandboxObserver(
+      this.gatewayClientForNamespace(sandbox.namespaceName),
+    ).getSandbox(
+      { name: sandbox.resourceName, workspace: workspaceName(context.namespace) },
+      context.signal,
+    );
+    if (
+      existing !== undefined &&
+      existing.annotations["openclaw.dev/revision-id"] !== context.revision.id
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        `Refusing OpenShell Sandbox ${sandbox.resourceName} without exact AgentRevision ownership.`,
+      );
+    }
+    return harnessObservation(existing);
   }
 
   close(): void {

@@ -17,7 +17,7 @@ SSH, or installed Compute combinations. See [Driver selection](selection.md).
 ### Driver interface
 
 The [shared interface](../../../packages/contracts/src/index.ts) exposes the
-required `facets` and `cleanup` members, an optional `harnessHome`, plus seven optional methods.
+required `facets` and `cleanup` members, an optional `harnessHome`, plus eight optional methods.
 
 | Member                                   | Contract                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -38,6 +38,14 @@ transport with the Agent transport token. It answers `serving` only after an
 authenticated handshake, or `failed` with the Harness's held startup failure,
 which Compute validates and fails the revision with; anything else is `starting`.
 Compute activates only a `serving` Harness.
+
+`observeHarness(context)` reads the provider's own lifecycle record of a dedicated
+revision's Harness Sandbox, without contacting the Harness. It answers `running`,
+`starting`, `unknown`, or `lost` with a code: `SANDBOX_MISSING`, `SANDBOX_DELETING`,
+`SANDBOX_STOPPED`, `SANDBOX_FAILED` (for example a deleted Pod) or `HARNESS_EXITED`.
+OCC adds it to the runtime description and diagnostics, and reports a missing or
+deleting Sandbox as lost only for the running Agent's active revision. Nothing
+recovers a lost Sandbox until the Agent is deployed again.
 
 ### Containment facets
 

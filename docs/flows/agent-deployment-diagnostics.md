@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
 updated: 2026-10-10
-last_updated_session: fix-1022-1019
+last_updated_session: fix-1027
 ---
 
 # Agent deployment diagnostics flow
@@ -93,6 +93,15 @@ as not serving. Its `agent` `runtime-status` check is always `unknown` with code
 no held-failure check appears for it. Gateway checks, including a held Gateway
 failure, are unaffected.
 
+Beside Compute's checks, `OpenClawController.diagnoseAgentDeployment` asks the
+revision's Sandbox Driver for its record of a dedicated Harness Sandbox
+(`observeHarness`, bounded at ten seconds). The result leads the list as an
+`agent` `sandbox` check: `succeeded` while the Sandbox runs, `failed` with a code
+such as `SANDBOX_FAILED` or `HARNESS_EXITED` once it can no longer serve the
+revision, and `unknown` while it starts (code `STARTING`), when the record is
+unreadable (`UNAVAILABLE`), or when a revision that is not the running Agent's
+active one has no Sandbox, such as a stopped Agent's.
+
 ### 3. Return validated evidence
 
 `packages/occ/src/deployment-diagnostics.ts:deploymentDiagnostics` requires
@@ -112,7 +121,9 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   code, because these checks do not test model credentials.
 - A `failed` check named after a startup step, such as `peer-bridge-record`,
   means the runtime is holding that failure. Its Logs tab shows the remedy.
-- On an OpenShell Harness, the `agent` check says nothing about its health.
+- On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
+  its health; the `agent` `sandbox` check does. A failed one means the Sandbox
+  is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
   A failed deployment's status names the held failure's code and cause, such as
   `RUNTIME_MODEL_PROBE_FAILED`. The
   [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
@@ -134,6 +145,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 15:30: Lead OpenShell diagnostics with the Harness Sandbox lifecycle check. (fix-1027)
 
 - 2026-10-10 14:30: Document that an OpenShell Harness's runtime status is unreachable to diagnostics. (fix-1022-1019)
 

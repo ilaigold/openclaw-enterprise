@@ -87,6 +87,16 @@ succeed while the affected plugin is disabled for that startup. Inspect the
 [plugin configuration](plugins-configure.md#check-the-result) before redeploying;
 a successful revision does not confirm that a third-party connector is usable.
 
+## An OpenShell Agent stops answering
+
+On OpenShell, OCE does not replace a Harness Sandbox after activation. A deleted
+or evicted Pod, or a Harness process that exited, leaves the Agent `active` while
+every chat fails. `occ agent runtime AGENT_ID` then starts with
+`Harness Sandbox: lost (CODE)`, and the version's diagnostics lead with a failed
+`agent` `sandbox` check carrying the same code. Deploy the Agent again
+(`occ agent deploy AGENT_ID`): the new revision gets a new Sandbox and the old one
+is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
+
 ## Read OpenShell sandbox and supervisor logs
 
 The [Sandbox source](agent-logs.md#sandbox-source) shows only what the OpenShell

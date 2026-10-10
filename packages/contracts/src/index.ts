@@ -40,6 +40,7 @@ export type {
   AgentRuntimeEvent,
   AgentRuntimePodStatus,
   AgentRuntimeLogSource,
+  AgentRuntimeHarnessStatus,
   AgentRuntimeDescription,
   AgentRuntimeDescribeOptions,
   AgentRuntimeLogRequest,
@@ -1119,6 +1120,17 @@ export type SandboxHarnessStatus =
   | { readonly state: "serving" }
   | { readonly state: "failed"; readonly runtimeFailure: unknown };
 
+/** Why a provisioned Harness Sandbox can no longer serve its revision. */
+export type SandboxHarnessLostCode =
+  "SANDBOX_MISSING" | "SANDBOX_DELETING" | "SANDBOX_STOPPED" | "SANDBOX_FAILED" | "HARNESS_EXITED";
+
+/** The provider's own lifecycle record of a revision's Harness Sandbox. */
+export type SandboxHarnessObservation =
+  | { readonly state: "running" }
+  | { readonly state: "starting" }
+  | { readonly state: "unknown" }
+  | { readonly state: "lost"; readonly code: SandboxHarnessLostCode };
+
 export interface ComputeLifecycleHooks {
   afterNamespacePrepared?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
   beforeWorkloadStart?(
@@ -1466,6 +1478,12 @@ export interface SandboxDriver extends Driver {
     context: SandboxLogContext,
     request: SandboxLogRequest,
   ): Promise<SandboxLogChunk>;
+  /**
+   * The provider's lifecycle record of the dedicated revision's Harness Sandbox, read-only.
+   * `lost` means the Sandbox is not serving the revision and OCC will not restart it
+   * (deleted, stopped, failed, or its Harness process exited); a new deployment replaces it.
+   */
+  observeHarness?(context: SandboxLogContext): Promise<SandboxHarnessObservation>;
 }
 
 export interface PluginDriverContext {
