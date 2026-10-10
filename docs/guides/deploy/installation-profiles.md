@@ -224,7 +224,9 @@ Each provider needs its own Secret, as the chart requires: its `secretName`
 name another provider's Secret, `gatewayApiKeySecretName`, the ChatGPT admin
 Secret when `codex.managedServiceAccounts` is set, a repository Secret, or the
 chart's `occ-installation-startup`, `occ-database` and `occ-auth` Secrets.
-`gatewayApiKeySecretName` must also differ from those three chart Secrets.
+`gatewayApiKeySecretName` must also differ from those three chart Secrets and
+from the Gateway TLS (`<release>-agent-gateways-tls`) and root CA
+(`occ-gateway-<hash>-root`) Secrets the chart generates.
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
 and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`

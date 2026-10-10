@@ -129,8 +129,9 @@ database and auth Secrets, the gateway API key Secret, the ChatGPT Secret and
 repository broker Secrets when enabled, and every provider checked before it.
 `validateGatewayApiKeySecret` applies the rule in the other direction: the
 gateway API key Secret must differ from `occ-installation-startup`,
-`occ-database`, and `occ-auth`. A collision writes a failed preflight report
-without `values.yaml` or `installation.yaml`.
+`occ-database`, and `occ-auth`, and from the Gateway TLS and root CA Secrets the
+chart generates for the release (`chartGatewaySecretNames`). A collision writes
+a failed preflight report without `values.yaml` or `installation.yaml`.
 
 `scripts/render-installation-profile.mjs:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and

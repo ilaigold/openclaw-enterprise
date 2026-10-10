@@ -1104,10 +1104,40 @@ const signInSecretDefaults = {
   google: "occ-google-login",
   oidc: "occ-oidc-login",
 };
-function validateGatewayApiKeySecret(values, diagnostics) {
-  if (chartSecretNames.includes(values.gatewayRouting.apiKeySecretName)) {
+// The chart's default Gateway name (openclaw.gatewayRouting.gatewayName): the profile
+// never sets gatewayRouting.gatewayName, so Compute's routing must use this exact name.
+function chartGatewayName(releaseName) {
+  return `${releaseName}-agent-gateways`.slice(0, 63).replace(/-$/, "");
+}
+// The Secrets the chart generates for gateway routing when gatewayRouting.tlsSecretName is
+// unset, as the profile leaves it: the leaf certificate (openclaw.gatewayRouting.tlsSecretName)
+// and the root CA (openclaw.gatewayRouting.rootSecretName, named after the hashed Gateway).
+function chartGatewaySecretNames(releaseName, namespace) {
+  const gatewayName = chartGatewayName(releaseName);
+  const routeLabel = sha256Hex(`${namespace}/${gatewayName}`).slice(0, 12);
+  return {
+    tls: `${gatewayName}-tls`.slice(0, 63).replace(/-$/, ""),
+    root: `occ-gateway-${routeLabel}-root`,
+  };
+}
+function validateGatewayApiKeySecret(values, releaseName, namespace, diagnostics) {
+  const name = values.gatewayRouting.apiKeySecretName;
+  if (chartSecretNames.includes(name)) {
     diagnostics.errors.push(
-      `controlPlane.gatewayApiKeySecretName must name a dedicated Secret; ${values.gatewayRouting.apiKeySecretName} holds other credentials.`,
+      `controlPlane.gatewayApiKeySecretName must name a dedicated Secret; ${name} holds other credentials.`,
+    );
+    return;
+  }
+  const generated = chartGatewaySecretNames(releaseName, namespace);
+  const role =
+    name === generated.tls
+      ? "Gateway TLS certificate"
+      : name === generated.root
+        ? "Gateway root CA"
+        : undefined;
+  if (role !== undefined) {
+    diagnostics.errors.push(
+      `controlPlane.gatewayApiKeySecretName must name a dedicated Secret; the chart generates ${name} for the ${role}.`,
     );
   }
 }
@@ -1531,7 +1561,7 @@ function buildRendered(profile, parsed, diagnostics) {
             ),
           },
           gatewayRouting: {
-            gatewayName: `${releaseName}-agent-gateways`.slice(0, 63).replace(/-$/, ""),
+            gatewayName: chartGatewayName(releaseName),
             gatewayNamespace: namespace,
             envoyNamespace,
           },
@@ -1740,7 +1770,7 @@ function buildRendered(profile, parsed, diagnostics) {
     };
   }
 
-  validateGatewayApiKeySecret(values, diagnostics);
+  validateGatewayApiKeySecret(values, releaseName, namespace, diagnostics);
   signInSecretsDedicated(values, diagnostics);
   validateDatabaseCaMount(values, diagnostics);
 
