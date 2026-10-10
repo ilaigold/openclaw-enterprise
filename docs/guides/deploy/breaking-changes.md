@@ -14,8 +14,8 @@ real Installation.
 ## 2026-10-10: Credential Secrets must be dedicated; profile Collectors need an exporter
 
 **What breaks.** Helm refuses a Secret name shared by two Secret settings
-(installation, auth, database, sign-in, ChatGPT, kubeconfig, repository, sandbox
-or Gateway) or by a generated Gateway Secret. Profiles with
+(installation, auth, database, database CA, sign-in, ChatGPT, kubeconfig,
+repository, sandbox or Gateway) or by a generated Gateway Secret. Profiles with
 `controlPlane.loggingCollector.enabled` need an `exporter`.
 
 **Who is affected.** Installations sharing those names; the defaults differ.
