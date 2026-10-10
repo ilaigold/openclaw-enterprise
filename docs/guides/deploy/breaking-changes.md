@@ -30,8 +30,9 @@ safe to run. Profiles with `controlPlane.loggingCollector.enabled` need an
 **Steps.** Move the credential to a new Secret, point the setting at it, and
 upgrade. For `gatewayRouting.apiKeySecretName` (profile:
 `controlPlane.gatewayApiKeySecretName`), the new Secret holds only the `occ`
-entry; then delete `occ` from the old Secret. Rotate a key that shared a
-Gateway Secret, such as the ChatGPT admin key or a TLS key. Copy your
+entry; then delete `occ` from the old Secret. Rotate a key that shared the
+gateway API key Secret or a generated Gateway Secret, such as the ChatGPT admin
+key or a TLS key. Copy your
 `exporter` values into the profile input. _untested_
 
 ## 2026-10-10: OpenShell Codex Agents need a new deployment
@@ -115,8 +116,9 @@ but with the policy omitted the Gateway picks its own, which can be `never`.
 **Who is affected.** Custom Codex Configurations with `untrusted` (the Gateway
 already refused them at load, with a `doctor --fix` hint that cannot work), and
 Agents with an automatic plugin reviewer whose Configuration omits the policy
-or sets `never` (readiness already refused `never`). Any update of such an
-Agent, even of credentials only, is refused. Every bundled Preset sets the policy.
+or sets `never` (readiness already refused `never`). Before, saves succeeded;
+now any other update of an Agent with such a reviewer, even of credentials only,
+is refused. Every bundled Preset sets the policy.
 
 **How to tell.** The `409` or `400` names the setting.
 

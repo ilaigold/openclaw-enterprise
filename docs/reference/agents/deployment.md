@@ -246,8 +246,8 @@ the unchanged pointer names a predecessor that was already stopped, so nothing
 serves until a new revision activates. When the worker refuses such a candidate
 or any first deployment, for example because its deploying actor lost `deploy`
 or a credential source was revoked, it stops the candidate's workload and
-records the refusal only after the stop succeeds
-([`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress)). Other refused
+records the refusal only after the stop succeeds (until then it waits as
+[`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress)). Other refused
 candidates stay until a later successful deployment, stop or delete. A candidate
 whose runtime failed by itself, such as `RUNTIME_MODEL_PROBE_FAILED` or
 `CONVERGENCE_DEADLINE_EXCEEDED`, keeps its Pods so its version's Logs tab can
