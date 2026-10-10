@@ -107,8 +107,22 @@ const k3dChannelTLSFailure = `FATA[0000] error getting K3s version for channel v
 
 // k3dStartupTimeout is a node that never logged "k3s is up and running",
 // which is how a node without the nat table fails: kube-proxy's error is in
-// the node log the rollback removes.
-const k3dStartupTimeout = `INFO[0003] Starting node 'k3d-occ-dev-test-server-0'
+// the node log the rollback removes. The progress lines up to the server
+// start are k3d v5.8.3's (trailing spaces included) from a real Compose
+// profile startup on 10-05; the failure lines follow k3d's messages.
+const k3dStartupTimeout = `INFO[0000] portmapping '127.0.0.1:13000:30080' targets the loadbalancer: defaulting to [servers:*:proxy agents:*:proxy] 
+INFO[0000] Prep: Network                                
+INFO[0000] Created network 'k3d-occ-dev-test'    
+INFO[0000] Created image volume k3d-occ-dev-test-images 
+INFO[0000] Starting new tools node...                   
+INFO[0000] Starting node 'k3d-occ-dev-test-tools' 
+INFO[0001] Creating node 'k3d-occ-dev-test-server-0' 
+INFO[0001] Creating LoadBalancer 'k3d-occ-dev-test-serverlb' 
+INFO[0001] Using the k3d-tools node to gather environment information 
+INFO[0001] HostIP: using network gateway 10.89.0.1 address 
+INFO[0001] Starting cluster 'occ-dev-test'       
+INFO[0001] Starting servers...                          
+INFO[0002] Starting node 'k3d-occ-dev-test-server-0' 
 ERRO[0303] Failed Cluster Start: Failed to start server k3d-occ-dev-test-server-0: Node k3d-occ-dev-test-server-0 failed to get ready: Context deadline exceeded while waiting for log message 'k3s is up and running' of node k3d-occ-dev-test-server-0: context deadline exceeded
 ERRO[0303] Failed to create cluster >>> Rolling Back
 INFO[0303] Deleting cluster 'occ-dev-test'
@@ -176,6 +190,17 @@ func TestK3dCreateErrorHint(t *testing.T) {
 			absent: []string{"iptable_nat", channelHint},
 		},
 		{
+			// Docker's port publishing, not the node's nat table.
+			name: "Docker port publishing failure after an undecided preflight", unconfirmed: true,
+			output: "ERRO[0002] Failed Cluster Start: Failed to start server k3d-occ-dev-test-serverlb: Error response from daemon: driver failed programming external connectivity on endpoint k3d-occ-dev-test-serverlb (5e2c): (iptables failed: iptables --wait -t nat -A DOCKER -p tcp -d 127.0.0.1 --dport 6443 -j DNAT --to-destination 172.18.0.3:6443 ! -i br-5e2c: iptables: No chain/target/match by that name.\n" + k3dRollbackLines,
+			line:   "ERRO[0002] Failed Cluster Start: Failed to start server k3d-occ-dev-test-serverlb: Error response from daemon: driver failed programming external connectivity on endpoint k3d-occ-dev-test-serverlb (5e2c): (iptables failed: iptables --wait -t nat -A DOCKER -p tcp -d 127.0.0.1 --dport 6443 -j DNAT --to-destination 172.18.0.3:6443 ! -i br-5e2c: iptables: No chain/target/match by that name.",
+			absent: []string{"iptable_nat", channelHint},
+		},
+		{
+			name: "progress lines only", output: "INFO[0001] Creating node 'k3d-occ-dev-test-server-0' \nWARN[0002] something to note\n", unconfirmed: true,
+			want: []string{unconfirmed}, absent: []string{"k3d reported"},
+		},
+		{
 			name: "port conflict after an undecided preflight", unconfirmed: true,
 			output: "ERRO[0001] Failed to create cluster: port is already allocated\n" + k3dRollbackLines,
 			line:   "ERRO[0001] Failed to create cluster: port is already allocated",
@@ -230,6 +255,18 @@ func TestK3dCreateFailureNamesAFailedChannelLookup(t *testing.T) {
 	var exitErr *exec.ExitError
 	if err == nil || !errors.As(err, &exitErr) || !strings.Contains(err.Error(), "k3d reported: "+k3dChannelTLSFailure) ||
 		!strings.Contains(err.Error(), "Local K3s image lookup fails") || strings.Contains(err.Error(), "iptable_nat") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A cancelled create gets k3d's line but no nat hint.
+func TestK3dCreateCancelledSkipsTheNATHint(t *testing.T) {
+	fakeK3dCreate(t, "exit 1")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := &runner{opts: Options{Out: io.Discard, Err: io.Discard}, env: map[string]string{}, legacyNATUnconfirmed: true}
+	err := r.createK3dCluster(ctx, "cluster", "create", "occ-dev-test")
+	if err == nil || strings.Contains(err.Error(), "iptable_nat") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
