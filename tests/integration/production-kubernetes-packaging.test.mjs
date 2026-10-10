@@ -3551,6 +3551,8 @@ test(
     };
     for (const [feature, secret, role] of [
       [{}, "occ-installation-startup", "installation.secretName"],
+      [{}, "occ-database", "database.secretName"],
+      [{}, "occ-auth", "auth.secretName"],
       [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
       [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
       [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
@@ -3595,12 +3597,15 @@ test("the chart requires installation and database Secret names", tooling, async
     ["installation.secretName", "installation startup"],
     ["database.secretName", "database URL"],
   ]) {
-    await assert.rejects(
-      render({ [key]: "" }),
-      ({ code, stderr }) =>
-        code !== 0 && stderr.includes(`${key} must name the operator-created ${message} Secret`),
-      key,
-    );
+    // `null` removes the key, which must fail the same way as an empty name.
+    for (const value of ["", "null"]) {
+      await assert.rejects(
+        render({ [key]: value }),
+        ({ code, stderr }) =>
+          code !== 0 && stderr.includes(`${key} must name the operator-created ${message} Secret`),
+        `${key}=${value}`,
+      );
+    }
   }
 });
 
