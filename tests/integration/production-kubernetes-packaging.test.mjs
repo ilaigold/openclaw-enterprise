@@ -3443,7 +3443,6 @@ test(
       "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
         "public-ingress",
     };
-    const databaseCaValues = { "database.caSecretName": "occ-rds-ca", "database.caKey": "ca.pem" };
     for (const [values, shared, refusal] of [
       [
         chatgptValues,
