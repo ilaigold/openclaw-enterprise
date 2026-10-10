@@ -2317,7 +2317,8 @@ http.createServer((req, res) => {
   res.end(JSON.stringify(req.url === "/counter" ? { modelCalls } : { data: [{ id: "fixture" }] }));
 }).listen(18880, "127.0.0.1");
 `;
-    for (const enabled of [true, false]) {
+    // Each case owns its container and configuration file, so both run at once.
+    await eachSettled([true, false], async (enabled) => {
       const configuration = drivers[0][1].kubernetesGatewayConfigurationDocument(
         createAdmittedRuntimeImageConfiguration("openclaw"),
       );
@@ -2400,7 +2401,7 @@ http.createServer((req, res) => {
         `native TLS enabled=${enabled}: native ready, Compute readiness ${enabled ? "refused" : "passed"}, modelCalls=0`,
       );
       await runDocker(["rm", "-f", containerName]);
-    }
+    });
   },
 );
 
