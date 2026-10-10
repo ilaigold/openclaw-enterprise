@@ -382,9 +382,10 @@ failed retry keeps the active runtime.
   the following `worker.completed` retry.
 - [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
+  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs),
   [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs) tests
-  require PostgreSQL; none proves real model execution.
+  require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback on the authenticated route after changing IAM Drivers.
 - [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) verifies
