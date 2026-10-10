@@ -3536,6 +3536,80 @@ test(
 );
 
 test(
+  "the chart refuses log collector Secrets shared with any credential Secret",
+  tooling,
+  async () => {
+    // Finding 1054: the collector's Secrets join the dedicated-Secret table, so cert-manager
+    // cannot overwrite a collector config named like a Gateway certificate Secret.
+    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+    const externalCa = {
+      ...externalGatewayRoutingValues,
+      "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+      "gatewayRouting.issuerRef.group": "cert-manager.io",
+      "gatewayRouting.caSecretName": "occ-private-ca",
+      "gatewayRouting.caSecretKey": "ca.crt",
+    };
+    for (const [feature, secret, role] of [
+      [{}, "occ-installation-startup", "installation.secretName"],
+      [{}, "occ-database", "database.secretName"],
+      [{}, "occ-auth", "auth.secretName"],
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
+      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
+      [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
+      [databaseCaValues, "occ-rds-ca", "database.caSecretName"],
+      [sandboxValues, "preview-wildcard", "gatewayRouting.sandbox.tlsSecretName"],
+      [chatgptValues, "occ-chatgpt-admin", "backend.chatgpt.secretName"],
+    ]) {
+      for (const key of ["configSecretName", "envSecretName"]) {
+        await assert.rejects(
+          render({
+            ...productionCollectorValues,
+            ...feature,
+            [`logging.collector.${key}`]: secret,
+          }),
+          ({ code, stderr }) =>
+            code !== 0 &&
+            stderr.includes(
+              `logging.collector.${key} must name a dedicated Secret; ${secret} is also ${role}`,
+            ),
+          `${key} = ${secret}`,
+        );
+      }
+    }
+    await assert.rejects(
+      render({
+        ...productionCollectorValues,
+        "logging.collector.envSecretName": "occ-otel-collector-config",
+      }),
+      /logging\.collector\.envSecretName must name a dedicated Secret; occ-otel-collector-config is also logging\.collector\.configSecretName/,
+    );
+    // A disabled feature's Secret name is free, as preflight treats the ChatGPT admin Secret.
+    await render({
+      ...productionCollectorValues,
+      "logging.collector.configSecretName": "occ-chatgpt-admin",
+    });
+  },
+);
+
+test("the chart requires installation and database Secret names", tooling, async () => {
+  // Finding 1055: an empty name rendered `secretName: ""` instead of failing at template time.
+  for (const [key, message] of [
+    ["installation.secretName", "installation startup"],
+    ["database.secretName", "database URL"],
+  ]) {
+    // `null` removes the key, which must fail the same way as an empty name.
+    for (const value of ["", "null"]) {
+      await assert.rejects(
+        render({ [key]: value }),
+        ({ code, stderr }) =>
+          code !== 0 && stderr.includes(`${key} must name the operator-created ${message} Secret`),
+        `${key}=${value}`,
+      );
+    }
+  }
+});
+
+test(
   "the chart refuses credential Secrets shared with the database CA or sandbox TLS Secret",
   tooling,
   async () => {

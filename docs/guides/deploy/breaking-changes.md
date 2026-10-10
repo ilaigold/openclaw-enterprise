@@ -15,8 +15,12 @@ real Installation.
 
 **What breaks.** Helm refuses a Secret name shared by two Secret settings
 (installation, auth, database, database CA, sign-in, ChatGPT, kubeconfig,
-repository, sandbox or Gateway) or by a generated Gateway Secret. Profiles with
-`controlPlane.loggingCollector.enabled` need an `exporter`.
+repository, sandbox, Gateway or Collector) or a generated Gateway Secret.
+Envoy Gateway accepts every entry of the gateway API key Secret as a client
+key, so sharing it made the ChatGPT admin key, a CA certificate or a TLS key a
+valid `x-api-key` on the Agent Gateway listener: such an Installation was never
+safe to run. Profiles with `controlPlane.loggingCollector.enabled` need an
+`exporter`.
 
 **Who is affected.** Installations sharing those names; the defaults differ.
 
@@ -24,30 +28,12 @@ repository, sandbox or Gateway) or by a generated Gateway Secret. Profiles with
 `<setting> must name a dedicated Secret` or the missing `exporter`.
 
 **Steps.** Move the credential to a new Secret, point the setting at it, and
-upgrade. Rotate a key that shared a Gateway Secret. Copy your `exporter` values
-into the profile input. _untested_
-
-## 2026-10-10: The gateway API key Secret must hold only gateway keys
-
-**What breaks.** Helm refuses a `gatewayRouting.apiKeySecretName` equal to
-`backend.chatgpt.secretName`, `database.caSecretName` or
-`gatewayRouting.sandbox.tlsSecretName`. Envoy Gateway accepts every entry of
-the gateway API key Secret as a client key, so a shared Secret made the ChatGPT
-admin key, the CA certificate or the TLS key a valid `x-api-key` on the Agent
-Gateway listener.
-Such an Installation was never safe to run.
-
-**Who is affected.** Installations that name one Secret for the gateway API key
-and one of those. The defaults differ.
-
-**How to tell.** `helm upgrade` fails with
-`gatewayRouting.apiKeySecretName must name a dedicated Secret`.
-
-**Steps.** Create a dedicated Secret with only the `occ` entry, copied from the
-shared Secret, point `gatewayRouting.apiKeySecretName` (profile:
-`controlPlane.gatewayApiKeySecretName`) at it, and upgrade. Then delete `occ`
-from the old Secret. If it held the ChatGPT admin key or a TLS key, rotate that
-key. _untested_
+upgrade. For `gatewayRouting.apiKeySecretName` (profile:
+`controlPlane.gatewayApiKeySecretName`), the new Secret holds only the `occ`
+entry; then delete `occ` from the old Secret. Rotate a key that shared the
+gateway API key Secret or a generated Gateway Secret, such as the ChatGPT admin
+key or a TLS key. Copy your
+`exporter` values into the profile input. _untested_
 
 ## 2026-10-10: OpenShell Codex Agents need a new deployment
 
@@ -95,22 +81,6 @@ Kubernetes renders an omitted or `auto` bind as `lan` from the next deployment.
 **Steps.** Fix the named setting and deploy again. On containerd with cgroup v2,
 also redeploy Agents whose bind is omitted or `auto`.
 
-## 2026-10-10: Agent saves check the automatic plugin reviewer
-
-**What breaks.** Creating or updating an Agent answers `400` when an enabled
-plugin selection sets `toolDefaults.reviewer` to `auto` and the named
-Configuration's `plugins.entries.codex.config.appServer.approvalPolicy` is
-omitted or `never`. Before, the save succeeded and only deployment refused it.
-
-**Who is affected.** Clients that save such an Agent before fixing its
-Configuration, and any update (even of credentials only) to an Agent already
-saved that way.
-
-**How to tell.** The `400` names the setting, as at deployment.
-
-**Steps.** Set the policy to `on-request` (or `on-failure`) first, or choose the
-human reviewer.
-
 ## 2026-10-10: controller-only releases can restart Agent Pods once
 
 **What breaks.** After a controller-only release, the first time the new worker
@@ -133,27 +103,30 @@ the deployed runtime ([checklist](upgrade-checklist.md)): affected Pods restart
 with its rendering on the existing image. Plan for one short chat interruption
 per affected Agent.
 
-## 2026-10-10: Codex approval policy is checked before deployment
+## 2026-10-10: Codex approval policy is checked at save and before deployment
 
 **What breaks.** Provisioning and deployment answer `409` when
 `plugins.entries.codex.config.appServer.approvalPolicy` is `untrusted` (Compute
-Drivers also refuse to prepare it), and `400` when an enabled plugin selection
-sets `toolDefaults.reviewer` to `auto` and that policy is omitted or `never`.
+Drivers also refuse to prepare it). Creating or updating an Agent, provisioning
+and deployment answer `400` when an enabled plugin selection sets
+`toolDefaults.reviewer` to `auto` and that policy is omitted or `never`.
 Native startup checks the automatic reviewer against the policy Compute renders,
 but with the policy omitted the Gateway picks its own, which can be `never`.
 
 **Who is affected.** Custom Codex Configurations with `untrusted` (the Gateway
 already refused them at load, with a `doctor --fix` hint that cannot work), and
-Agents with an automatic plugin reviewer whose Configuration omits the policy.
-With `never`, deployment now refuses what readiness refused before. Every
-bundled Preset sets the policy.
+Agents with an automatic plugin reviewer whose Configuration omits the policy
+or sets `never` (readiness already refused `never`). Before, saves succeeded;
+now any other update of an Agent with such a reviewer, even of credentials only,
+is refused. Every bundled Preset sets the policy.
 
 **How to tell.** The `409` or `400` names the setting.
 
-**Steps.** Set the policy to `on-request`, or choose the human reviewer, then
-deploy the Agent again. `on-failure` still works; native startup now gets
-`on-request`, which the Gateway runs for it. An Agent already deployed with the
-policy omitted keeps its current session policy until it is deployed again.
+**Steps.** Set the policy to `on-request` before saving the Agent, or choose the
+human reviewer, then deploy the Agent again. `on-failure` still works; native
+startup now gets `on-request`, which the Gateway runs for it. An Agent already
+deployed with the policy omitted keeps its current session policy until it is
+deployed again.
 
 ## 2026-10-09: refresh-token source updates need a new Secret
 

@@ -961,6 +961,24 @@ test(
         chartError: new RegExp(refusal?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "^$"),
       });
     }
+    // Finding 1054: the enabled log collector's Secrets are in the same table.
+    for (const enabled of [false, true]) {
+      const collector = enabled ? { enabled, exporter: { cidr: "192.0.2.40/32" } } : { enabled };
+      assertParity({
+        label: `collector ${enabled}`,
+        controlPlane: {
+          databaseCa: { secretName: "occ-otel-collector-config" },
+          loggingCollector: collector,
+        },
+        values: {
+          database: { caSecretName: "occ-otel-collector-config" },
+          logging: { collector },
+        },
+        accepted: !enabled,
+        chartError:
+          /logging\.collector\.configSecretName must name a dedicated Secret; occ-otel-collector-config is also database\.caSecretName/,
+      });
+    }
   },
 );
 
