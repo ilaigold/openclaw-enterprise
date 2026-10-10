@@ -444,6 +444,64 @@ test("Fastify app writes one safe HTTP completion record and bounded unexpected-
   assert.equal(JSON.stringify(output.lines).includes("sensitive query"), false);
 });
 
+test("Fastify contract errors drop the request values that verbose validation attached", async () => {
+  const output = memoryDestination();
+  const logger = createOccLogger({
+    component: "occ-api",
+    level: "debug",
+    destination: output.destination,
+  });
+  const app = createFastifyApp({
+    iamDriver: iamDriver(),
+    computeDriver: createDevelopmentComputeDriver(),
+    configurationDriver: createTestConfigurationDriver({ id: "configuration-logging-test" }),
+    resolveHarness: () => undefined,
+    auditSink: new InMemoryAuditSink(),
+    development: { enabled: true, installationId: `ins_${randomUUID()}` },
+    auth: authStub(),
+    logger,
+  });
+  // The app's own Ajv options (verbose, so each failure carries its value) and error handler
+  // judge this body. onError keeps a reference to the error; after the response it holds what
+  // any later log of the error would see.
+  const seen = [];
+  app.addHook("onError", async (_request, _reply, error) => {
+    seen.push(error);
+  });
+  app.post(
+    "/validated",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: { token: { type: "string", maxLength: 4 } },
+          required: ["token"],
+          additionalProperties: false,
+        },
+      },
+    },
+    async () => ({}),
+  );
+
+  const token = "sensitive-validation-token";
+  const invalid = await app.inject({ method: "POST", url: "/validated", payload: { token } });
+  await app.close();
+
+  assert.equal(invalid.statusCode, 400);
+  assert.deepEqual(invalid.json().error.details, [{ path: "/token", code: "TOO_LONG" }]);
+  assert.equal(seen.length, 1);
+  assert.equal(Array.isArray(seen[0].validation), true);
+  for (const entry of seen[0].validation) {
+    assert.deepEqual(
+      ["data", "schema", "parentSchema"].filter((key) => Object.hasOwn(entry, key)),
+      [],
+    );
+  }
+  assert.equal(JSON.stringify(seen[0]).includes(token), false);
+  assert.equal(invalid.body.includes(token), false);
+  assert.equal(JSON.stringify(output.lines).includes(token), false);
+});
+
 test("worker emitter reports health at debug and failures at error", () => {
   const output = memoryDestination();
   const logger = createOccLogger({
@@ -475,6 +533,14 @@ test("worker emitter reports health at debug and failures at error", () => {
     elapsedMs: 2900,
   });
   emit({ event: "worker.error", code: "CLAIM_LOST" });
+  // A graceful shutdown that aborts a pass is no failure (finding 1040).
+  emit({
+    event: "worker.pass-interrupted",
+    workId: "agent_revision:rev_test:reconcile",
+    attempt: 1,
+    operation: "agent_revision.reconcile",
+    cause: "WorkerStopping",
+  });
 
   assert.deepEqual(
     output.lines.map(({ event, severity }) => ({ event, severity })),
@@ -483,8 +549,10 @@ test("worker emitter reports health at debug and failures at error", () => {
       { event: "worker.completed", severity: "INFO" },
       { event: "worker.completed", severity: "INFO" },
       { event: "worker.error", severity: "ERROR" },
+      { event: "worker.pass-interrupted", severity: "INFO" },
     ],
   );
+  assert.equal(output.lines.at(-1).cause, "WorkerStopping");
   const completed = output.lines.find((line) => line.event === "worker.completed");
   assert.equal(completed.workId, "namespace:ns_test:reconcile:ready");
   assert.equal(completed.attempt, 1);

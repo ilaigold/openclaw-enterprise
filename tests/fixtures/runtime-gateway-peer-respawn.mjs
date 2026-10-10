@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { setTimeout } from "node:timers/promises";
-import { promisify } from "node:util";
 
 // Runs inside a runtime image Gateway container started by the Kubernetes
 // Gateway wrapper for a dedicated Codex Harness with a plugin selection. It
 // stands in for the Harness plugin status endpoint, replaces the Harness (a new
 // startup, pod and plugin result), and checks that the wrapper respawns only
-// the OpenClaw process: readiness, judged by the production readiness command,
+// the OpenClaw process: readiness, judged by the production HTTP endpoint,
 // drops and returns only when the new process serves with the new credential
 // and plugin result, and the new process re-acknowledges the workspace node.
-// The launcher passes the readiness command and the credential derivation domain.
-const execute = promisify(execFile);
-const readinessSource = process.env.OCC_TEST_GATEWAY_READINESS;
+// The launcher passes the credential derivation domain.
 const tokenDomain = process.env.OCC_TEST_TOKEN_DOMAIN;
 const revisionId = process.env.OPENCLAW_AGENT_REVISION_ID;
 const statusPort = Number(process.env.OPENCLAW_PLUGIN_STATUS_PORT);
@@ -25,6 +21,7 @@ const linear = "codex-plugin:linear@openai-curated-remote";
 const workspaceNodeId = process.env.OCC_TEST_WORKSPACE_NODE_ID;
 const outageExit = process.env.OCC_TEST_GATEWAY_SCENARIO === "peer-outage-exit";
 const staleReplacement = process.env.OCC_TEST_GATEWAY_SCENARIO === "stale-replacement";
+const writableInitialConfig = process.env.OCC_TEST_WRITABLE_INITIAL_CONFIG === "true";
 let initialGateway;
 let replacementPeerReads = 0;
 let trackSamePeerOutage = false;
@@ -109,8 +106,11 @@ function appServerToken(startupId) {
 
 async function ready() {
   try {
-    await execute(process.execPath, ["-e", readinessSource], { timeout: 5_000 });
-    return true;
+    const response = await fetch(`http://127.0.0.1:${statusPort}/readyz`, {
+      signal: AbortSignal.timeout(5_000),
+      redirect: "error",
+    });
+    return response.status === 200;
   } catch {
     return false;
   }
@@ -146,22 +146,42 @@ async function gatewayProcess() {
   return found;
 }
 
-async function waitFor(description, timeoutMs, check) {
+async function waitFor(description, timeoutMs, check, detail = () => "") {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const result = await check();
     if (result) {
       return result;
     }
-    assert.ok(Date.now() < deadline, `timed out waiting for ${description}`);
+    assert.ok(Date.now() < deadline, `timed out waiting for ${description}${detail()}`);
     await setTimeout(200);
   }
 }
 
+// The wrapper's 30 s apply budget runs from the native spawn. On a starved runner
+// OpenClaw can outlast it and the wrapper reports GATEWAY_UNAVAILABLE or
+// RELOAD_NOT_CONFIRMED, which the ack clears. That report can also be stale: the
+// wrapper does not poll during the peer outage below. Any other failure is final.
+const pendingWorkspaceNodeFailures = new Set(["GATEWAY_UNAVAILABLE", "RELOAD_NOT_CONFIRMED"]);
+let lastWorkspaceNodeStatus;
+
 async function workspaceNodeAck() {
   const status = await (await fetch(runtimeStatusUrl)).json();
-  assert.equal(status.workspaceNodeFailure, undefined, JSON.stringify(status));
-  return status.workspaceNodeId === workspaceNodeId;
+  lastWorkspaceNodeStatus = status;
+  if (status.workspaceNodeId === workspaceNodeId) {
+    assert.equal(status.workspaceNodeFailure, undefined, JSON.stringify(status));
+    return true;
+  }
+  assert.ok(
+    status.workspaceNodeFailure === undefined ||
+      pendingWorkspaceNodeFailures.has(status.workspaceNodeFailure.code),
+    JSON.stringify(status),
+  );
+  return false;
+}
+
+function workspaceNodeDetail() {
+  return `: ${JSON.stringify(lastWorkspaceNodeStatus)}`;
 }
 
 function linearEnabled(config) {
@@ -257,7 +277,13 @@ try {
   assert.equal(afterOutage[0].startTicks, before.startTicks);
   assert.equal(afterOutage[0].token, before.token);
 
-  await waitFor("the first workspace node ack", 60_000, workspaceNodeAck);
+  if (writableInitialConfig) {
+    const edited = JSON.parse(await readFile(configPath, "utf8"));
+    edited.messages = { ...edited.messages, responsePrefix: "Native admin edit" };
+    await writeFile(configPath, JSON.stringify(edited));
+  }
+
+  await waitFor("the first workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
   const assetsBefore = (await stat("/home/node/openclaw-runtime-assets/bundled-skills")).mtimeMs;
 
   // The Harness restarts: a new startup and pod, and the plugin is now authorized.
@@ -292,8 +318,14 @@ try {
   }
   assert.equal(after.token, appServerToken("harness-startup-2"));
   assert.equal(linearEnabled(JSON.parse(await readFile(configPath, "utf8"))), true);
+  if (writableInitialConfig) {
+    assert.equal(
+      JSON.parse(await readFile(configPath, "utf8")).messages.responsePrefix,
+      "Native admin edit",
+    );
+  }
   // The new process loaded the node binding again and acknowledged it itself.
-  await waitFor("the respawned workspace node ack", 60_000, workspaceNodeAck);
+  await waitFor("the respawned workspace node ack", 60_000, workspaceNodeAck, workspaceNodeDetail);
   const ackAt = Date.now() - changedAt;
   // Runtime assets were published once, by the first start.
   assert.equal(

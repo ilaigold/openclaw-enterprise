@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRequire } from "node:module";
 import {
-  attachProvider,
+  assertConsoleSignIn,
+  assertProviderAttached,
+  assertSessionUser,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
-  currentSession,
   fakeGoogle,
   githubSignIn,
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
+  loginDenialCount,
   memoryLogger,
   onboardPasswordAccounts,
   passwordSignIn,
@@ -21,6 +24,9 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+
+const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+const { hashPassword } = await import(require.resolve("better-auth/crypto"));
 
 const adminEmail = "recovery-only-admin@example.test";
 const password = "recovery-only-member-password";
@@ -82,14 +88,7 @@ test(
     let adminHeaders;
 
     async function attach(provider, account, subject) {
-      const attached = await attachProvider(
-        app,
-        adminHeaders,
-        account.id,
-        provider,
-        String(subject),
-      );
-      assert.equal(attached.statusCode, 200, attached.body);
+      await assertProviderAttached(app, adminHeaders, account.id, provider, String(subject));
     }
 
     await t.test("the default setting keeps every enrolled account's password", async () => {
@@ -152,13 +151,7 @@ test(
       });
     });
 
-    const denials = async () =>
-      (await state.transact((unit) => unit.audit.list())).filter(
-        ({ action, outcome, reasonCode }) =>
-          action === "authentication.login" &&
-          outcome === "denied" &&
-          reasonCode === "INVALID_CREDENTIALS",
-      ).length;
+    const denials = () => loginDenialCount(state, "INVALID_CREDENTIALS");
     await t.test("ordinary passwords get the bad-credential answer", async () => {
       const before = await denials();
       const unknown = { email: "recovery-only-nobody@example.test", password };
@@ -196,8 +189,7 @@ test(
     await t.test("the recovery account still signs in with its password", async () => {
       const signedIn = await passwordSignIn(app, origin, admin, address());
       assert.equal(signedIn.statusCode, 200, signedIn.body);
-      const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, admin.id);
+      const cookie = await assertSessionUser(app, signedIn, admin.id);
       assert.equal(
         (await passwordSignIn(app, origin, { ...admin, password: "x".repeat(20) }, address()))
           .statusCode,
@@ -208,9 +200,7 @@ test(
 
     await t.test("an ordinary account signs in with its GitHub identity", async () => {
       const { callback } = await githubSignIn(app, origin, memberSubject, address());
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      await assertConsoleSignIn(app, callback, member.id);
     });
 
     await t.test("attaching an identity unstrands an account without a restart", async () => {
@@ -270,9 +260,57 @@ test(
         { subject: googleMemberSubject },
         address(),
       );
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      await assertConsoleSignIn(app, callback, member.id);
     });
+    await t.test(
+      "guarded and recovery-only sign-in preserve a normalized recovery account and malformed denial audits",
+      async () => {
+        await app.close();
+        app = undefined;
+        const legacyEmail = "legacy-recovery-\ud800@example.test";
+        const storedEmail = "legacy-recovery-\ufffd@example.test";
+        const legacyPassword = "legacy-password-\u0000-\ud800-\ufffd";
+        // Seed the historical text encoding through PostgreSQL, keeping the existing
+        // recovery identity and method. Authentication and audit remain production code.
+        await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, admin.id]);
+        await pool.query(
+          "UPDATE occ.account SET password = $1 WHERE user_id = $2 AND provider_id = 'credential'",
+          [await hashPassword(legacyPassword), admin.id],
+        );
+        const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [admin.id]);
+        assert.equal(stored.rows[0].email, storedEmail);
+        for (const settings of [
+          githubUpgradeSettings(admin.id),
+          recoveryOnly(githubUpgradeSettings(admin.id)),
+        ]) {
+          app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
+          const accepted = await passwordSignIn(
+            app,
+            origin,
+            { email: storedEmail, password: legacyPassword },
+            address(),
+          );
+          assert.equal(accepted.statusCode, 200, accepted.body);
+          await assertSessionUser(app, accepted, admin.id);
+          const cookie = cookieHeaderFromSetCookie(accepted.headers["set-cookie"]);
+          const before = await denials();
+          for (const email of [legacyEmail, "recovery-nul\u0000@example.test"]) {
+            const refused = await app.inject({
+              method: "POST",
+              url: "/api/auth/sign-in/email",
+              remoteAddress: address(),
+              headers: { origin, cookie },
+              payload: { email, password: legacyPassword },
+            });
+            assert.equal(refused.statusCode, 400, refused.body);
+            assert.equal(refused.json().error.code, "INVALID_REQUEST");
+            assert.equal(refused.headers["set-cookie"], undefined);
+          }
+          assert.equal(await denials(), before + 2);
+          await app.close();
+          app = undefined;
+        }
+      },
+    );
   },
 );

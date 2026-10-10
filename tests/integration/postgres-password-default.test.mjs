@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRequire } from "node:module";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
@@ -14,6 +15,9 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+
+const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+const { hashPassword } = await import(require.resolve("better-auth/crypto"));
 
 const adminEmail = "password-default-admin@example.test";
 const memberEmail = "password-default-member@example.test";
@@ -279,5 +283,54 @@ test(
       assert.equal(other.statusCode, 200, other.body);
       assert.equal((await signIn(memberEmail, memberPassword, "203.0.113.21")).statusCode, 200);
     });
+    await t.test(
+      "a normalized legacy email retains password access and malformed sign-ins are audited",
+      async () => {
+        const legacyEmail = "legacy-default-\ud800@example.test";
+        const storedEmail = "legacy-default-\ufffd@example.test";
+        const legacyPassword = "legacy-password-\u0000-\ud800-\ufffd";
+        // Reproduce a previously accepted account's encoding with the real PostgreSQL
+        // parameter path; the API now rejects malformed input before it reaches State.
+        const headers = await adminHeaders();
+        const created = await app.inject({
+          method: "POST",
+          url: "/api/auth/accounts",
+          headers,
+          payload: { email: storedEmail, password: memberPassword },
+        });
+        assert.equal(created.statusCode, 201, created.body);
+        const userId = created.json().data.id;
+        await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, userId]);
+        await pool.query(
+          "UPDATE occ.account SET password = $1 WHERE user_id = $2 AND provider_id = 'credential'",
+          [await hashPassword(legacyPassword), userId],
+        );
+        const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
+        assert.equal(stored.rows[0].email, storedEmail);
+        const accepted = await signIn(storedEmail, legacyPassword);
+        assert.equal(accepted.statusCode, 200, accepted.body);
+        const cookie = cookieHeaderFromSetCookie(accepted.headers["set-cookie"]);
+        assert.equal((await sessionOf(cookie)).user.id, userId);
+        const state = new PostgresPlatformState(pool);
+        const denials = async () =>
+          (await state.transact((unit) => unit.audit.list())).filter(
+            ({ action, reasonCode }) =>
+              action === "authentication.login" && reasonCode === "INVALID_CREDENTIALS",
+          );
+        const before = (await denials()).length;
+        for (const email of [legacyEmail, "legacy-nul\u0000@example.test"]) {
+          const refused = await app.inject({
+            method: "POST",
+            url: "/api/auth/sign-in/email",
+            headers: { origin, cookie },
+            payload: { email, password: legacyPassword },
+          });
+          assert.equal(refused.statusCode, 400, refused.body);
+          assert.equal(refused.json().error.code, "INVALID_REQUEST");
+          assert.equal(refused.headers["set-cookie"], undefined);
+        }
+        assert.equal((await denials()).length, before + 2);
+      },
+    );
   },
 );

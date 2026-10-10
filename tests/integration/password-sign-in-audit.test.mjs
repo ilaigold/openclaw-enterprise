@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import {
+  issueKnownDevice,
   knownDeviceCookieName,
   knownDeviceFromCookieHeader,
   verifyKnownDevice,
@@ -33,7 +34,7 @@ function controller(audit, extra = {}) {
   return { auth, memoryDatabase };
 }
 
-async function signIn(auth, body) {
+async function signIn(auth, body, headers = {}) {
   const sent = { status: 200, headers: {} };
   const reply = {
     header(name, value) {
@@ -55,7 +56,7 @@ async function signIn(auth, body) {
       ip: "127.0.0.1",
       method: "POST",
       url: "/api/auth/sign-in/email",
-      headers: { origin: baseURL },
+      headers: { origin: baseURL, ...headers },
       body,
     },
     reply,
@@ -363,6 +364,90 @@ test("guarded profile: an email no account can hold is a 400 that spends the pas
     assert.equal(limited.status, 429, JSON.stringify(limited.payload));
   }
   assert.deepEqual(snapshots, [], "no account is read for an email no account can hold");
-  // Refused like the endpoint's other malformed input, without a denial audit.
-  assert.deepEqual(denials, []);
+  // The existing guarded denial owner records every admitted invalid attempt.
+  assert.equal(denials.length, 20);
+  assert.deepEqual(new Set(denials), new Set(["INVALID_CREDENTIALS"]));
 });
+
+// A real cookie for the replacement-character spelling also matches the UTF-8 encoding
+// of the surrogate spelling. Invalid input must skip that proof read in both profiles.
+for (const profile of ["password-only", "guarded", "recovery-only"]) {
+  test(`${profile}: malformed email skips known-device state and preserves denial auditing`, async () => {
+    const reads = [];
+    const denials = [];
+    let failAudit = false;
+    const recordDenied = async () => {
+      denials.push("INVALID_CREDENTIALS");
+      if (failAudit) {
+        throw new Error("audit unavailable");
+      }
+    };
+    const accountState = async (address) => {
+      reads.push(address);
+      return "test-password-state";
+    };
+    const humanLogin =
+      profile === "password-only"
+        ? undefined
+        : createHumanLogin(
+            {
+              createAttempt: async () => {
+                throw new Error("not used");
+              },
+              consumeAttempt: async () => undefined,
+              snapshotExternal: async () => undefined,
+              snapshotPassword: async (address) => {
+                reads.push(address);
+                return undefined;
+              },
+              knownDeviceState: accountState,
+              recordDenied,
+            },
+            {
+              recoveryUserId: "guarded-recovery",
+              github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+              ...(profile === "recovery-only" ? { passwordSignIn: "recovery-only" } : {}),
+            },
+            baseURL,
+          );
+    const auth = createControllerAuth({
+      mode: "development",
+      installationId: "ins_invalid_email_known_device",
+      baseURL,
+      secret,
+      secureCookies: false,
+      database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
+      ...(humanLogin
+        ? { humanLogin }
+        : {
+            knownDeviceState: accountState,
+            passwordSignInAudit: { accepted: async () => {}, refused: recordDenied },
+          }),
+      passwordSlowLaneFloors: { floorMs: 1, maxFloorMs: 1 },
+    });
+    const malformed = "cookie-\ud800@example.test";
+    const cookie = issueKnownDevice(
+      secret,
+      "cookie-\ufffd@example.test",
+      "test-password-state",
+      Date.now(),
+    );
+    const headers = { cookie: `${knownDeviceCookieName(false)}=${cookie}` };
+    assertUnstorableEmail(
+      await signIn(auth, { email: malformed, password }, headers),
+      "an unpaired UTF-16 surrogate",
+    );
+    assert.deepEqual(reads, [], "malformed email must not reach known-device or credential State");
+    assert.equal(denials.length, 1);
+    failAudit = true;
+    for (let attempt = 1; attempt < 10; attempt += 1) {
+      const failed = await signIn(auth, { email: malformed, password }, headers);
+      assert.equal(failed.status, 503);
+      assert.equal(failed.headers["set-cookie"], undefined);
+    }
+    assert.equal(denials.length, 10);
+    assert.equal((await signIn(auth, { email: malformed, password }, headers)).status, 429);
+    assert.equal(denials.length, 10, "exhausted admission does not repeat the denial audit");
+    assert.deepEqual(reads, []);
+  });
+}
