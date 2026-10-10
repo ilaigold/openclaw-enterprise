@@ -482,7 +482,13 @@ const STARTING_SANDBOX_PHASES: ReadonlySet<string | number> = new Set([
  * Workspace, so `SANDBOX_MISSING` covers a Workspace OCC can no longer read.
  */
 export function harnessObservation(
-  sandbox: { readonly phase?: string | number } | undefined,
+  sandbox:
+    | {
+        readonly phase?: string | number;
+        readonly exitCode?: number;
+        readonly restartCount?: number;
+      }
+    | undefined,
 ): SandboxHarnessObservation {
   if (sandbox === undefined) {
     return Object.freeze({ state: "lost", code: "SANDBOX_MISSING" });
@@ -495,7 +501,28 @@ export function harnessObservation(
   if (phase === "SANDBOX_PHASE_READY" || phase === 2) {
     return Object.freeze({ state: "running" });
   }
-  return Object.freeze({ state: STARTING_SANDBOX_PHASES.has(phase) ? "starting" : "unknown" });
+  // The gateway's own test for a policy restart (`is_automatic_restart_transition`): STARTING
+  // with the exited process's code kept and a restart number. A first start, and a Sandbox an
+  // operator restarted, clear both, so they stay plain `starting`.
+  const { exitCode, restartCount } = sandbox;
+  if (
+    (phase === "SANDBOX_PHASE_STARTING" || phase === 8) &&
+    exitCode !== undefined &&
+    Number.isSafeInteger(exitCode) &&
+    restartCount !== undefined &&
+    Number.isSafeInteger(restartCount) &&
+    restartCount > 0
+  ) {
+    return Object.freeze({
+      state: "starting",
+      code: "HARNESS_RESTARTING",
+      exitCode,
+      restarts: restartCount,
+    });
+  }
+  return STARTING_SANDBOX_PHASES.has(phase)
+    ? Object.freeze({ state: "starting" })
+    : Object.freeze({ state: "unknown" });
 }
 
 // OpenShell keeps a request_id whose create errored server-side unresolved forever, so a
@@ -2386,7 +2413,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
 
   /**
    * Reads the dedicated revision's own Sandbox record without touching it. Only the
-   * gateway's lifecycle phase is used; the Harness transport is not contacted.
+   * gateway's lifecycle phase and restart state are used; the Harness transport is not
+   * contacted.
    */
   async observeHarness(context: SandboxLogContext): Promise<SandboxHarnessObservation> {
     this.requireOperatorWorkspaceMode("observe a Harness");
@@ -2400,7 +2428,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const sandbox = this.sandboxRef(context);
-    // Only the phase and the ownership annotation of the record are used.
+    // Only the phase, the restart state and the ownership annotation of the record are used.
     const existing = await openShellSandboxObserver(
       this.gatewayClientForNamespace(sandbox.namespaceName),
     ).getSandbox(
