@@ -205,8 +205,10 @@ inner Codex app-server sandbox:
 }
 ```
 
-Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's
-outer boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
+Codex's own sandbox cannot start inside OpenShell, the outer boundary; the
+`user` reviewer stops the Gateway re-enabling it per turn. Agents deployed by
+an earlier controller lack the reviewer: deploy them again
+([notice](../../guides/deploy/breaking-changes.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
