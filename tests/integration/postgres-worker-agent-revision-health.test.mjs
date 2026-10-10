@@ -1141,9 +1141,9 @@ for (const mode of ["transient", "generic"]) {
   );
 }
 
-// Finding 1033 keeps one exception: an IAM refusal is decided again before the stored refusal's
-// stop, so once `deploy` is granted again the deployment continues as before. A refusal Compute
-// decided is not prepared again, so it is published once its stop succeeds.
+// Finding 1033 keeps one exception: authorization and backend refusals are decided again before
+// the stored refusal's stop, so once `deploy` is granted again the deployment continues as before.
+// A refusal Compute decided is not prepared again, so it is published once its stop succeeds.
 for (const refuse of ["revoked", "unsupported"]) {
   revisionTest(
     `a ${refuse} candidate whose refusal lifts during its wait ${refuse === "revoked" ? "deploys" : "keeps its refusal"}`,

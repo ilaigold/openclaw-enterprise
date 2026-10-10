@@ -163,8 +163,19 @@ const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
 // as long as that stop took, so a blocked stop holds at most a fifth of the worker and other
 // Agents' work runs between attempts (finding 1002).
 const REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS = 300_000;
-// Refusals the deployment pass decides again before its stored refusal's stop; see refusalWait.
-const IAM_REFUSAL_CODES: ReadonlySet<string> = new Set(["ACTOR_REVOKED", "AUTHORIZATION_DENIED"]);
+// Refusals that authorizeRevision and resolveRevisionBackend decide again on every pass, before
+// a stored refusal's stop is retried; one that no longer stands lifts the stored refusal.
+const REDECIDED_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "ACTOR_REVOKED",
+  "AUTHORIZATION_DENIED",
+  "INVALID_AGENT_PRINCIPAL",
+  "HARNESS_AUTH_REQUIRED",
+  "INVALID_HARNESS_AUTH",
+  "INVALID_SECRET_BINDINGS",
+  "BACKEND_UNAVAILABLE",
+  "HARNESS_AUTH_SOURCE_CHANGED",
+  "SERVICE_ACCOUNT_BACKEND_MISMATCH",
+]);
 const REFUSED_CANDIDATE_STOP_DURATION_FACTOR = 4;
 
 // A repository cleanup that another pass cannot settle (an invalidated attempt or a cleanup
@@ -353,7 +364,7 @@ interface RevisionDispatchResult extends DispatchResult {
   readonly refusedStopMs?: number;
   /** That stop yielded to other Work; later rechecks do not count it as a failure. */
   readonly refusedStopYielded?: boolean;
-  /** This pass already stopped the refused candidate, so publishing does not stop it again. */
+  /** This pass already ran the refused candidate's stop, so publishing does not run it again. */
   readonly refusedCandidateStopped?: boolean;
   readonly data?: Readonly<Record<string, unknown>>;
   readonly resultData?: Readonly<Record<string, unknown>>;
@@ -3284,15 +3295,16 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, denied);
         return;
       }
-      // An IAM refusal is decided again above on every pass. Once it no longer stands (`deploy`
-      // granted again), the deployment continues, as it did before the wait was stored.
-      if (this.refusalWait !== undefined && IAM_REFUSAL_CODES.has(this.refusalWait.refusal)) {
-        this.refusalWait = undefined;
-      }
       const backend = await this.resolveRevisionBackend(revision);
       if (backend !== undefined) {
         await this.finalizeRevision(claim, backend);
         return;
+      }
+      // Authorization and the backend are decided again above on every pass. Once a stored
+      // refusal of theirs no longer stands (for example `deploy` granted again), the deployment
+      // continues, as it did before the wait was stored.
+      if (this.refusalWait !== undefined && REDECIDED_REFUSAL_CODES.has(this.refusalWait.refusal)) {
+        this.refusalWait = undefined;
       }
       if (agent.desiredRuntimeState === "stopped") {
         if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
@@ -3376,7 +3388,8 @@ export class ControllerWorker {
         // kept a yielding stop from ever finishing (finding 1034), and an error before the refusal
         // ended the work with the candidate running (finding 1033).
         if (previous !== undefined && previous.revision >= revision.revision) {
-          // A newer revision activated beside this shared candidate; it retires the candidate.
+          // A newer revision activated beside this shared candidate; it retires the candidate. (An
+          // error before this point retries the stop and publishes the refusal instead.)
           await this.finalizeRevision(claim, {
             outcome: "success",
             code: "REVISION_SUPERSEDED",
@@ -4446,6 +4459,7 @@ export class ControllerWorker {
       // A refusal decided before the work's first preparation leaves Compute untouched.
       if (
         this.preparedThisPass !== revision.id &&
+        this.refusalWait?.idempotencyKey !== claim.idempotencyKey &&
         (await this.queue.findWorkAttempt(claim.idempotencyKey)) === undefined
       ) {
         return;

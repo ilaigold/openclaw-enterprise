@@ -308,8 +308,8 @@ once recorded, lost claims until the stop succeeds, after the readiness cadence,
 failed (not `stopYielded`) stop in evidence, up to 5 minutes
 but at least four times the stop's duration. Each deferral records the refusal as evidence
 (`repeatEvidence`) for deployment status and `worker.completed`. Later passes
-retry only that stop, and errors keep waiting, unless superseded (stopped first) or an IAM
-refusal lifted.
+retry only that stop, and errors keep waiting, unless superseded or an authorization or
+backend refusal lifted.
 
 `ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
 Driver interval, including closing sessions and failed runtime retirement,
