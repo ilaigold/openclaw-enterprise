@@ -121,15 +121,15 @@ Invalid values therefore fail before `values.yaml` or `installation.yaml` is
 written.
 
 `scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
-and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
-`client-id` and `client-secret` defaults when only one key is overridden, so those
-collisions also fail before deployment files are written.
+and client-secret Secret keys for GitHub, Google and OIDC, considering the chart's
+`client-id` and `client-secret` defaults when only one key is overridden.
 `dedicatedSecrets` applies the chart's dedicated-Secret rule in the chart's
 order: the ChatGPT admin, database CA, gateway API key, sign-in (default or
 explicit) and repository Secrets must each differ from `occ-installation-startup`,
 `occ-database`, `occ-auth`, the generated Gateway TLS and root CA Secrets
-(`chartGatewaySecretNames`) and every Secret listed before it. A collision writes a failed
-preflight report without `values.yaml` or `installation.yaml`.
+(`chartGatewaySecretNames`), the enabled log collector's config and exporter
+Secrets, and every Secret listed before it. Either collision fails preflight
+before deployment files are written.
 
 `scripts/render-installation-profile.mjs:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
