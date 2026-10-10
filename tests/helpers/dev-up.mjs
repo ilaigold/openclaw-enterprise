@@ -386,8 +386,13 @@ process.exit(86);
   const dockerLog = engine === "docker" ? engineLog : join(directory, "docker.log");
   const podmanLog = engine === "podman" ? engineLog : join(directory, "podman.log");
   const occLog = join(directory, "occ.log");
+  // Settings exported in the caller's shell would override the defaults the
+  // tests assert (for example OCC_DEVELOPMENT_K3S_IMAGE's +v1.35 channel).
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("OCC_DEVELOPMENT_")),
+  );
   const env = {
-    ...process.env,
+    ...inherited,
     PATH: engine === "podman" ? bin : `${bin}${delimiter}${process.env.PATH ?? ""}`,
     OPENAI_API_KEY: "",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
