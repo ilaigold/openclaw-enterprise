@@ -1164,12 +1164,12 @@ test(
       [
         "the GitHub sign-in Secret",
         { ...google, ...githubOn, "auth.google.secretName": "occ-github-login" },
-        /auth\.google credentials must use a dedicated Secret/,
+        /auth\.google\.secretName must name a dedicated Secret/,
       ],
       [
         "the Better Auth Secret",
         { ...google, "auth.google.secretName": "occ-auth" },
-        /auth\.google credentials must use a dedicated Secret/,
+        /auth\.google\.secretName must name a dedicated Secret/,
       ],
       [
         "one key for client ID and secret",
@@ -1221,17 +1221,17 @@ test(
       [
         "the Google sign-in Secret",
         { ...oidc, ...googleOn, "auth.oidc.secretName": "occ-google-login" },
-        /auth\.oidc credentials must use a dedicated Secret/,
+        /auth\.oidc\.secretName must name a dedicated Secret/,
       ],
       [
         "the GitHub sign-in Secret",
         { ...oidc, ...githubOn, "auth.oidc.secretName": "occ-github-login" },
-        /auth\.oidc credentials must use a dedicated Secret/,
+        /auth\.oidc\.secretName must name a dedicated Secret/,
       ],
       [
         "the Better Auth Secret",
         { ...oidc, "auth.oidc.secretName": "occ-auth" },
-        /auth\.oidc credentials must use a dedicated Secret/,
+        /auth\.oidc\.secretName must name a dedicated Secret/,
       ],
       [
         "one key for client ID and secret",

@@ -11,21 +11,21 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
-## 2026-10-10: Sign-in and kubeconfig Secrets must be dedicated; profile Collectors need an exporter
+## 2026-10-10: Credential Secrets must be dedicated; profile Collectors need an exporter
 
-**What breaks.** Helm refuses a sign-in `secretName` equal to a Gateway TLS or
-CA Secret, and an `executionCluster` kubeconfig Secret equal to the ChatGPT
-Backend, a sign-in or a Gateway Secret. Profiles with
+**What breaks.** Helm refuses a Secret name shared by two Secret settings
+(installation, auth, database, sign-in, ChatGPT, kubeconfig, repository, sandbox
+or Gateway) or by a generated Gateway Secret. Profiles with
 `controlPlane.loggingCollector.enabled` need an `exporter`.
 
 **Who is affected.** Installations sharing those names; the defaults differ.
 
-**How to tell.** `helm upgrade` or the profile renderer names the Secret or the
-missing `exporter`.
+**How to tell.** `helm upgrade` or the profile renderer reports
+`<setting> must name a dedicated Secret` or the missing `exporter`.
 
 **Steps.** Move the credential to a new Secret, point the setting at it, and
-upgrade. Rotate a sign-in client secret that shared a Gateway Secret. Copy your
-`exporter` values into the profile input. _untested_
+upgrade. Rotate a key that shared a Gateway Secret. Copy your `exporter` values
+into the profile input. _untested_
 
 ## 2026-10-10: The gateway API key Secret must hold only gateway keys
 
@@ -41,7 +41,7 @@ Such an Installation was never safe to run.
 and one of those. The defaults differ.
 
 **How to tell.** `helm upgrade` fails with
-`gatewayRouting.apiKeySecretName must differ from the ...`.
+`gatewayRouting.apiKeySecretName must name a dedicated Secret`.
 
 **Steps.** Create a dedicated Secret with only the `occ` entry, copied from the
 shared Secret, point `gatewayRouting.apiKeySecretName` (profile:

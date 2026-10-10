@@ -225,18 +225,14 @@ as behind a source-preserving NLB, needs none.
 
 Client-ID and client-secret Secret keys must differ. Preflight compares custom
 keys with the chart defaults (`client-id` and `client-secret`) when a key is omitted.
-Each provider needs its own Secret, as the chart requires: its `secretName`
-(default `occ-github-login`, `occ-google-login` or `occ-oidc-login`) must not
-name another provider's Secret, `gatewayApiKeySecretName`, the ChatGPT admin
-Secret when `codex.managedServiceAccounts` is set, a repository Secret, the
-generated Gateway Secrets below, or the chart's `occ-installation-startup`,
-`occ-database` and `occ-auth` Secrets.
-`gatewayApiKeySecretName` must also differ from those three chart Secrets,
-`databaseCa.secretName`, and the Gateway TLS (`<release>-agent-gateways-tls` for
+Each credential Secret must be dedicated, as the chart requires: a sign-in
+`secretName` (default `occ-github-login`, `occ-google-login` or `occ-oidc-login`),
+`gatewayApiKeySecretName`, `databaseCa.secretName`, the ChatGPT admin Secret when
+`codex.managedServiceAccounts` is set, and each repository Secret must differ from
+each other, from the chart's `occ-installation-startup`, `occ-database` and
+`occ-auth` Secrets, and from the Gateway TLS (`<release>-agent-gateways-tls` for
 short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
-generates. The ChatGPT admin Secret and each repository Secret must differ from
-the three chart Secrets, those two generated Secrets, `gatewayApiKeySecretName`
-and each other. With `controlPlane.loggingCollector.enabled`, no credential
+generates. With `controlPlane.loggingCollector.enabled`, no credential
 Secret may be named `occ-otel-collector-config` or
 `occ-otel-collector-exporter`.
 
