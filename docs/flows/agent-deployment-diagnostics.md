@@ -99,8 +99,8 @@ revision's Sandbox Driver for its record of a dedicated Harness Sandbox
 `agent` `sandbox` check: `succeeded` while the Sandbox runs, `failed` with a code
 such as `SANDBOX_FAILED` or `HARNESS_EXITED` once it can no longer serve the
 revision, and `unknown` while it starts (code `STARTING`), when the record is
-unreadable (`UNAVAILABLE`), or for a revision that is not the running Agent's
-active one, such as a stopped Agent whose Sandbox was removed.
+unreadable (`UNAVAILABLE`), or when a revision that is not the running Agent's
+active one has no Sandbox, such as a stopped Agent's.
 
 ### 3. Return validated evidence
 

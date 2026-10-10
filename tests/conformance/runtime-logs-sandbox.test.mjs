@@ -590,6 +590,11 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
   const candidate = await fixture.request("GET", target.runtimePath);
   assert.equal(candidate.status, 200, candidate.text);
   assert.deepEqual(candidate.data.harness, { state: "unknown" });
+  // A terminal record is OpenShell's own state, reported for any revision (a failed candidate).
+  gateway.state.sandbox = record("SANDBOX_PHASE_COMPLETED");
+  const exited = await fixture.request("GET", target.runtimePath);
+  assert.equal(exited.status, 200, exited.text);
+  assert.deepEqual(exited.data.harness, { state: "lost", code: "HARNESS_EXITED" });
   await fixture.activate(target);
 
   // The full phase table is unit-tested below; the routes are checked on representative

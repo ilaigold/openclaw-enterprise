@@ -3040,11 +3040,14 @@ export class OpenClawController {
       return Object.freeze({ state });
     }
     if (state === "lost" && typeof code === "string" && HARNESS_LOST_CODES.has(code)) {
-      // Only the running Agent's active revision is expected to have a live Sandbox. A
-      // stopped Agent, a retired revision, or a candidate before its Sandbox exists has
-      // none by design, so its absence is not reported as a lost Harness.
-      return binding.agent.desiredRuntimeState === "running" &&
-        binding.agent.activeRevisionId === binding.revision.id
+      // A stopped Agent, a retired revision, or a candidate before its Sandbox exists has
+      // no Sandbox by design (or one being removed), so only the running Agent's active
+      // revision reports its absence as lost. A stopped, failed or exited Sandbox record
+      // is OpenShell's own terminal state and is reported for any revision.
+      const expected =
+        binding.agent.desiredRuntimeState === "running" &&
+        binding.agent.activeRevisionId === binding.revision.id;
+      return expected || (code !== "SANDBOX_MISSING" && code !== "SANDBOX_DELETING")
         ? Object.freeze({ state, code: code as SandboxHarnessLostCode })
         : Object.freeze({ state: "unknown" as const });
     }
