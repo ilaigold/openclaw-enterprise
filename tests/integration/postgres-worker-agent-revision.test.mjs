@@ -4078,7 +4078,7 @@ test(
   requiresPostgres,
   async (context) => {
     // Finding 1040: stopping the worker aborts the pass in flight. Its claim is recovered when
-    // the lease expires, so the pass is healthy: no compute-prepare-failed or CLAIM_LOST error.
+    // the lease expires, so no compute-prepare-failed or CLAIM_LOST error is logged.
     const events = [];
     const lines = [];
     const logged = createWorkerLogEmitter(
@@ -4155,7 +4155,7 @@ test(
         { event: "worker.stopped", severity: "INFO" },
       ],
     );
-    // The pass spent no attempt: the claim waits for its lease to expire.
+    // The work keeps its claim until the lease expires; then another worker resumes it.
     const work = await fixture.observerPool.query(
       "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
       [candidate.idempotencyKey],

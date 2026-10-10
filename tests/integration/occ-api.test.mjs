@@ -2896,18 +2896,20 @@ test("a refused deployment's status names its cause and remedy without naming pr
     BACKEND_UNAVAILABLE:
       "The Backend this revision was admitted with is no longer configured on the Installation. Ask an admin to restore it, or move the Agent to a configured Backend, then deploy again.",
     HARNESS_AUTH_SOURCE_CHANGED:
-      "The ServiceAccount this revision authenticates with is missing or its credential changed since admission. Deploy again to admit a revision with its current credential.",
+      "The ServiceAccount this revision authenticates with is missing, has no access token, or its credential changed since admission. Bind an available ServiceAccount, or deploy again to admit a revision with its current credential.",
     SECRET_BINDING_UNAVAILABLE:
       "A Secret this revision binds is missing or no longer belongs to the selected Secret Driver. Bind available Secrets, then deploy again.",
     NAMESPACE_NOT_READY:
       "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.",
     WORKSPACE_SETUP_UNSUPPORTED:
-      "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, or create the Agent without initial workspace files.",
+      "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.",
     REPOSITORY_REVISION_STOPPED:
       "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
     REPOSITORY_REVISION_SUPERSEDED: "Deployment was superseded by a newer revision.",
     DEPENDENCY_UNAVAILABLE:
       "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+    LEASE_EXPIRED:
+      "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.",
     // Internal inconsistencies keep the generic text.
     INVALID_REVISION_OWNER: "Deployment reconciliation failed.",
   };
