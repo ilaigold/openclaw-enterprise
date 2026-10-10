@@ -2906,6 +2906,17 @@ test("a refused deployment's status names its cause and remedy without naming pr
     REPOSITORY_REVISION_STOPPED:
       "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
     REPOSITORY_REVISION_SUPERSEDED: "Deployment was superseded by a newer revision.",
+    // Finding 1045: repository credential refusals name cause and remedy, never the repository.
+    REPOSITORY_RUNTIME_UNSUPPORTED:
+      "The Installation's Compute Driver can no longer deliver repository credentials to this revision. Repository access needs an embedded OpenClaw or dedicated Codex runtime with no Sandbox Driver, on a Compute Driver configured for repository credentials. Ask an admin to restore that setup, or remove the Agent's repository access, then deploy again.",
+    REPOSITORY_BINDING_UNAVAILABLE:
+      "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an admin to approve it again, then deploy again.",
+    REPOSITORY_BINDING_CHANGED:
+      "The approval behind a repository this revision binds changed since admission, for example the access levels or push rules approved for the Agent's Namespace. Deploy again to admit a revision with the current approval.",
+    REPOSITORY_DRIVER_MISMATCH:
+      "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again to admit a revision for the selected Driver, choosing approved repository access first if the deploy is refused. If the Installation has none, remove the Agent's repository access or ask an admin to select one.",
+    REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED:
+      "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.",
     DEPENDENCY_UNAVAILABLE:
       "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
     LEASE_EXPIRED:
