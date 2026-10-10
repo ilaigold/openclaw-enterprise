@@ -140,6 +140,9 @@ The worker emits fixed operational event classes through the same logger:
   stop work carry no deployment timing.
 - `worker.error`: reports `CLAIM_LOST` or `WORKER_UNAVAILABLE` without exposing
   credentials.
+- `worker.pass-interrupted`: a graceful shutdown aborted the pass in flight, at
+  info level with `cause` `WorkerStopping`; another worker resumes the work once
+  its lease expires.
 - `worker.repository-cleanup-warning`: a repository cleanup that another
   pass cannot settle, at warn level, once per work item and `cause`. `cause` is
   `REPOSITORY_ATTEMPT_INVALIDATED` or the cleanup error code (for example

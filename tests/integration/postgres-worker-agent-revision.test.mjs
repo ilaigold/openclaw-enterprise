@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import {
   ActivationFailedError,
   ActivationPendingError,
@@ -4069,6 +4070,97 @@ test(
       status: 422,
     });
     assert.equal(JSON.stringify(events).includes(failure.message), false);
+  },
+);
+
+test(
+  "a graceful shutdown during Compute preparation logs the interrupted pass, not errors",
+  requiresPostgres,
+  async (context) => {
+    // Finding 1040: stopping the worker aborts the pass in flight. Its claim is recovered when
+    // the lease expires, so the pass is healthy: no compute-prepare-failed or CLAIM_LOST error.
+    const events = [];
+    const lines = [];
+    const logged = createWorkerLogEmitter(
+      createOccLogger({
+        component: "occ-worker",
+        level: "debug",
+        destination: {
+          write(chunk) {
+            for (const line of String(chunk).split("\n")) {
+              if (line.length > 0) {
+                lines.push(JSON.parse(line));
+              }
+            }
+            return true;
+          },
+        },
+      }),
+    );
+    const fixture = await setup(context);
+    const { candidate } = await fixture.admitInitialRevision("compute-preparation-shutdown");
+    let entered;
+    const preparing = new Promise((resolve) => {
+      entered = resolve;
+    });
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, revisionContext) {
+          if (revision.id !== candidate.id) {
+            return fixture.compute.prepareRevision(revision, revisionContext);
+          }
+          const signal = currentComputeAbortSignal();
+          entered();
+          await new Promise((resolve) => {
+            signal.addEventListener("abort", resolve, { once: true });
+          });
+          throw new Error("Kubernetes request aborted by the worker");
+        },
+        describePrepareRevisionFailure() {
+          return { code: "KUBERNETES_PREPARATION_FAILED", stage: "prepare_revision" };
+        },
+      },
+      {
+        emit: (event) => {
+          events.push(event);
+          logged(event);
+        },
+      },
+    );
+    await preparing;
+    await fixture.stop();
+
+    assert.deepEqual(
+      events.filter(({ event }) => event !== "worker.health").map(({ event }) => event),
+      ["worker.started", "worker.pass-interrupted", "worker.stopped"],
+    );
+    assert.deepEqual(
+      events.find(({ event }) => event === "worker.pass-interrupted"),
+      {
+        event: "worker.pass-interrupted",
+        workId: candidate.idempotencyKey,
+        attempt: 1,
+        operation: "agent_revision.reconcile",
+        cause: "WorkerStopping",
+      },
+    );
+    assert.deepEqual(
+      lines
+        .filter(({ event }) => event !== "worker.health")
+        .map(({ event, severity }) => ({ event, severity })),
+      [
+        { event: "worker.started", severity: "INFO" },
+        { event: "worker.pass-interrupted", severity: "INFO" },
+        { event: "worker.stopped", severity: "INFO" },
+      ],
+    );
+    // The pass spent no attempt: the claim waits for its lease to expire.
+    const work = await fixture.observerPool.query(
+      "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(work.rows, [{ state: "claimed", attempt_count: 1 }]);
   },
 );
 
