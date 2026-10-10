@@ -127,12 +127,10 @@ process.exit(child.status ?? 1);
         cause: error,
       });
     });
-    // Every supervisor proof in the file must pass in the image: environment and
-    // file-delivered node setup, the file-delivered Gateway CA for Codex hooks,
-    // the hook directory rebuilt without following a planted link and cleared of
-    // earlier credentials, a failed saved-identity probe that is retried, and a
-    // stop with no child. The check reads the run's own totals, so adding a
-    // proof needs no change here; the floor is the 7 proofs above (finding 1032).
+    // Every supervisor proof in the file must pass in the image. The check reads
+    // the run's own totals, so adding a proof needs no change here. The floor is
+    // the 7 proofs the file had when the count stopped being hard-coded
+    // (finding 1032); lower it only when a proof is removed on purpose.
     assertAllPassed(stdout, { minimum: 7 });
   },
 );

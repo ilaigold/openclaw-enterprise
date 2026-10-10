@@ -31,6 +31,7 @@ test("node test summary reads spec and TAP totals", () => {
     todo: 0,
   });
   assert.equal(nodeTestSummary(report({ fail: 2 }, "#")).fail, 2);
+  assert.equal(nodeTestSummary(report({ todo: 1 }).replaceAll("\n", "\r\n")).todo, 1);
 });
 
 test("node test summary refuses a missing or repeated total", () => {
@@ -59,7 +60,7 @@ test("all-passed check follows the run's own test count", () => {
   ]) {
     assert.throws(
       () => assertAllPassed(report(counts), { minimum: 7 }),
-      /Expected all of at least 7/,
+      /Expected all of at least 7 .*ℹ duration_ms 12\.3$/s,
       JSON.stringify(counts),
     );
   }
