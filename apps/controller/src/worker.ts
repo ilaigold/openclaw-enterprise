@@ -50,6 +50,7 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   SandboxRevisionUnsupportedError,
+  ScopeViolationError,
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
@@ -3199,6 +3200,7 @@ export class ControllerWorker {
     let result: RevisionDispatchResult;
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
     let refusalWaitRead = false;
+    let claimAgent: Readonly<Agent> | undefined;
     try {
       if (
         claim.agentId === undefined ||
@@ -3228,6 +3230,7 @@ export class ControllerWorker {
         return { namespace, agent, revision, previous };
       });
       const { namespace, agent, revision, previous } = resources;
+      claimAgent = agent;
       if (namespace === undefined || agent === undefined || revision === undefined) {
         await this.finalizeRevision(claim, {
           outcome: "permanent",
@@ -3562,7 +3565,7 @@ export class ControllerWorker {
         throw error;
       }
       if (!refusalWaitRead && !(error instanceof RefusedCandidateStopError)) {
-        await this.rereadRefusalWait(claim, error);
+        await this.rereadRefusalWait(claim, claimAgent, error);
       }
       if (error instanceof RefusedCandidateStopError) {
         ({ result, logFields: failureLogFields } = error.pending());
@@ -4561,9 +4564,15 @@ export class ControllerWorker {
    * an ordinary retry instead, the error spent an attempt and its evidence ended the wait: the
    * next pass prepared the candidate again, and at the attempt limit the work failed with the
    * candidate running and the refusal lost (finding 1041). If this read fails too, the error
-   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt.
+   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. A
+   * ScopeViolationError (an invalid row) cannot recover by itself, so it stays a retry that the
+   * attempt limit ends instead of a wait repeated forever.
    */
-  private async rereadRefusalWait(claim: ClaimedWork, error: unknown): Promise<void> {
+  private async rereadRefusalWait(
+    claim: ClaimedWork,
+    agent: Readonly<Agent> | undefined,
+    error: unknown,
+  ): Promise<void> {
     const { agentId, revisionId } = claim;
     if (
       agentId === undefined ||
@@ -4573,13 +4582,26 @@ export class ControllerWorker {
       return;
     }
     try {
-      const agent = await this.state.read((view) =>
-        view.agents.findAgent(claim.namespaceId, agentId),
-      );
-      if (agent !== undefined) {
-        await this.readRefusalWait(claim, agent, revisionId);
+      const current =
+        agent ??
+        (await this.state.read((view) => view.agents.findAgent(claim.namespaceId, agentId)));
+      if (current !== undefined) {
+        await this.readRefusalWait(claim, current, revisionId);
       }
-    } catch {
+    } catch (reread) {
+      if (reread instanceof WorkClaimLostError) {
+        throw reread;
+      }
+      if (reread instanceof ScopeViolationError || error instanceof ScopeViolationError) {
+        return;
+      }
+      // The run loop's own log names no work.
+      this.emit({
+        event: "worker.error",
+        code: "WORKER_UNAVAILABLE",
+        ...workLogFields(claim),
+        ...revisionFailureLogFields(error),
+      });
       throw error;
     }
   }

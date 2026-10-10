@@ -2016,7 +2016,10 @@ test(
           const ended = await fixture.workResult(replacement);
           assert.equal(ended.rows[0].reason_code, null, "the wait ended");
           const left = events.some(
-            ({ event, code }) => event === "worker.error" && code === "WORKER_UNAVAILABLE",
+            ({ event, code, workId }) =>
+              event === "worker.error" &&
+              code === "WORKER_UNAVAILABLE" &&
+              workId === replacement.idempotencyKey,
           );
           return injected >= 3 && left ? true : undefined;
         },
@@ -2070,6 +2073,8 @@ test(
     let lifted = false;
     let liftedAt = 0;
     let failedAfterLift = 0;
+    let admitted = Infinity;
+    let preparations;
     let scenario;
     scenario = await startRefusedCandidate(fixture, "refused-lifts-late", {
       refuse: "iam",
@@ -2083,6 +2088,11 @@ test(
         failedStops += 1;
         if (lifted) {
           failedAfterLift += 1;
+        } else if (failedStops >= 2 && Date.now() - admitted > 3_000) {
+          // Granted during this pass's stop, after its denial: the next pass sees the grant.
+          lifted = true;
+          liftedAt = Date.now();
+          preparations = scenario.driver.preparations(scenario.replacement);
         }
         return Promise.reject(new Error("Kubernetes API temporarily unavailable"));
       },
@@ -2100,15 +2110,24 @@ test(
       },
     });
     const { owner, first, replacement, driver } = scenario;
-    const admitted = Date.now();
+    admitted = Date.now();
+    await waitFor("the grant past the deadline", async () => (lifted ? true : undefined), 30_000);
     await waitFor(
-      "two failed refused stops past the deadline",
-      async () => (failedStops >= 2 && Date.now() - admitted > 3_000 ? true : undefined),
+      "a wait on the deadline",
+      async () =>
+        refusedStopWaits(events, replacement).some(
+          ({ refusal }) => refusal === "CONVERGENCE_DEADLINE_EXCEEDED",
+        )
+          ? true
+          : undefined,
       30_000,
     );
-    const preparations = driver.preparations(replacement);
-    lifted = true;
-    liftedAt = Date.now();
+    const waiting = await fixture.deploymentStatus(owner, replacement);
+    assert.equal(waiting.progress.lastAttempt.code, "REFUSED_CANDIDATE_STOP_PENDING");
+    assert.equal(
+      waiting.progress.lastAttempt.message,
+      "Deployment missed its convergence deadline; stopping the candidate before recording the failure. The controller will retry.",
+    );
     await fixture.work(replacement, "failed_permanent", 60_000);
     const result = await fixture.workResult(replacement);
     assert.equal(result.rows[0].reason_code, "CONVERGENCE_DEADLINE_EXCEEDED");
@@ -2122,9 +2141,7 @@ test(
     assert.equal(active.rows[0].active_revision_id, first.id);
     // The waits after the grant name the deadline they will publish.
     const waits = refusedStopWaits(events, replacement).map(({ refusal }) => refusal);
-    assert.deepEqual(waits.slice(-2), [
-      "CONVERGENCE_DEADLINE_EXCEEDED",
-      "CONVERGENCE_DEADLINE_EXCEEDED",
-    ]);
+    const lateWaits = waits.slice(waits.indexOf("CONVERGENCE_DEADLINE_EXCEEDED"));
+    assert.deepEqual(lateWaits, ["CONVERGENCE_DEADLINE_EXCEEDED", "CONVERGENCE_DEADLINE_EXCEEDED"]);
   },
 );
