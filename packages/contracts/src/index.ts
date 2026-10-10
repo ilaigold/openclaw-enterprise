@@ -1086,6 +1086,17 @@ export type SandboxHarnessStatus =
   | { readonly state: "serving" }
   | { readonly state: "failed"; readonly runtimeFailure: unknown };
 
+/** Why a provisioned Harness Sandbox can no longer serve its revision. */
+export type SandboxHarnessLostCode =
+  "SANDBOX_MISSING" | "SANDBOX_DELETING" | "SANDBOX_STOPPED" | "SANDBOX_FAILED" | "HARNESS_EXITED";
+
+/** The provider's own lifecycle record of a revision's Harness Sandbox. */
+export type SandboxHarnessObservation =
+  | { readonly state: "running" }
+  | { readonly state: "starting" }
+  | { readonly state: "unknown" }
+  | { readonly state: "lost"; readonly code: SandboxHarnessLostCode };
+
 export interface ComputeLifecycleHooks {
   afterNamespacePrepared?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
   beforeWorkloadStart?(
@@ -1433,6 +1444,12 @@ export interface SandboxDriver extends Driver {
     context: SandboxLogContext,
     request: SandboxLogRequest,
   ): Promise<SandboxLogChunk>;
+  /**
+   * The provider's lifecycle record of the dedicated revision's Harness Sandbox, read-only.
+   * `lost` means the Sandbox will not serve the revision again without a new deployment
+   * (deleted, stopped, failed, or its Harness process exited).
+   */
+  observeHarness?(context: SandboxLogContext): Promise<SandboxHarnessObservation>;
 }
 
 export interface PluginDriverContext {
@@ -1740,11 +1757,19 @@ export interface AgentRuntimeLogSource {
   readonly retention: string;
 }
 
+/** A provider-owned Harness Sandbox as its Sandbox Driver records it; `unknown` when unreadable. */
+export interface AgentRuntimeHarnessStatus {
+  readonly state: "running" | "starting" | "lost" | "unknown";
+  readonly code?: SandboxHarnessLostCode | "UNAVAILABLE";
+}
+
 export interface AgentRuntimeDescription {
   readonly revisionId: string;
   readonly observedAt: string;
   readonly pods: readonly AgentRuntimePodStatus[];
   readonly sources: readonly AgentRuntimeLogSource[];
+  /** Present only for a dedicated Harness whose Sandbox Driver records its lifecycle. */
+  readonly harness?: AgentRuntimeHarnessStatus;
 }
 
 /** Narrows a description for a log read, which needs one source's Pods and no Events. */

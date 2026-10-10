@@ -1429,6 +1429,33 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
       ),
       { maxItems: 4 },
     ),
+    harness: Type.Optional(
+      Type.Object(
+        {
+          state: Type.Union([
+            Type.Literal("running"),
+            Type.Literal("starting"),
+            Type.Literal("lost"),
+            Type.Literal("unknown"),
+          ]),
+          code: Type.Optional(
+            Type.Union([
+              Type.Literal("SANDBOX_MISSING"),
+              Type.Literal("SANDBOX_DELETING"),
+              Type.Literal("SANDBOX_STOPPED"),
+              Type.Literal("SANDBOX_FAILED"),
+              Type.Literal("HARNESS_EXITED"),
+              Type.Literal("UNAVAILABLE"),
+            ]),
+          ),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox will not serve this revision again; deploy the Agent again to replace it.",
+        },
+      ),
+    ),
   },
   { additionalProperties: false },
 );

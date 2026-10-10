@@ -4,6 +4,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -120,10 +121,39 @@ func runtimeLogLineText(at string, record runtimeLogRecord) string {
 	return visibleText(text.String())
 }
 
+// harnessCode matches the fixed codes OCC reports for a provider-owned Harness Sandbox.
+var harnessCode = regexp.MustCompile(`^[A-Z][A-Z_]{0,63}$`)
+
+// runtimeHarnessLine summarizes the provider-owned Harness Sandbox, or returns "" when
+// the description has none. Only OCC's fixed states and codes are printed.
+func runtimeHarnessLine(resource map[string]any) string {
+	harness, ok := resource["harness"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	state, _ := harness["state"].(string)
+	if !slices.Contains([]string{"running", "starting", "lost", "unknown"}, state) {
+		state = "unknown"
+	}
+	line := "Harness Sandbox: " + state
+	if code, ok := harness["code"].(string); ok && harnessCode.MatchString(code) {
+		line += " (" + code + ")"
+	}
+	if state == "lost" {
+		line += ". It will not serve this revision again; deploy the Agent again to replace it."
+	}
+	return line
+}
+
 func (app *application) printRuntime(description any) error {
 	resource, ok := description.(map[string]any)
 	if !ok {
 		return fmt.Errorf("OCC returned an invalid runtime description")
+	}
+	if line := runtimeHarnessLine(resource); line != "" {
+		if _, err := fmt.Fprintf(app.out, "%s\n\n", line); err != nil {
+			return err
+		}
 	}
 	pods, _ := resource["pods"].([]any)
 	rows := make([]any, 0, len(pods))

@@ -7,7 +7,10 @@ import {
   GrpcOpenShellGatewayClient,
   openShellSandboxLogReader,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import {
+  harnessObservation,
+  OpenShellSandboxDriver,
+} from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
 import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
@@ -37,11 +40,17 @@ function sandboxLine(second, message, extra = {}) {
 }
 
 /**
- * A gateway client that only answers `GetSandboxLogs`. Every other member, and any
- * property the log path touches besides `getSandboxLogs`, is recorded and fails.
+ * A gateway client that only answers the reads `GetSandboxLogs` and `GetSandbox` (from
+ * `state.sandbox`, absent by default). Every other member is recorded and fails.
  */
 function logOnlyGatewayClient() {
-  const state = { lines: [], bufferTotal: undefined, error: undefined };
+  const state = {
+    lines: [],
+    bufferTotal: undefined,
+    error: undefined,
+    sandbox: undefined,
+    sandboxError: undefined,
+  };
   const requests = [];
   const touched = [];
   const target = {
@@ -62,13 +71,21 @@ function logOnlyGatewayClient() {
       };
     },
   };
+  target.getSandbox = async (request, signal) => {
+    assert.ok(signal instanceof AbortSignal);
+    requests.push({ getSandbox: structuredClone(request) });
+    if (state.sandboxError !== undefined) {
+      throw state.sandboxError;
+    }
+    return state.sandbox;
+  };
   const client = new Proxy(target, {
     get(object, property) {
       if (typeof property === "string") {
         touched.push(property);
       }
-      if (property === "getSandboxLogs") {
-        return object.getSandboxLogs;
+      if (property === "getSandboxLogs" || property === "getSandbox") {
+        return object[property];
       }
       return () => {
         throw new Error(`The log path reached the OpenShell ${String(property)} RPC.`);
@@ -193,6 +210,10 @@ test("sandbox log pages never contain planted credentials from command lines or 
     { id: "sandbox", kind: "sandbox", pods: [], available: true, retention: undefined },
   );
   assert.match(source.retention, /last 2000 lines per sandbox/);
+  // Describing the runtime reads only the Sandbox record, for its Harness lifecycle.
+  assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
+  gateway.touched.length = 0;
+  gateway.requests.length = 0;
 
   const auditBefore = auditSink.events.length;
   const logs = await request("GET", target.logsPath("source=sandbox&tailLines=1000"));
@@ -533,6 +554,182 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
   assert.equal(gateway.requests.length, requestsBefore, "no read after a denial");
 });
 
+test("a lost OpenShell Harness Sandbox is reported by the runtime description and diagnostics", async () => {
+  const gateway = logOnlyGatewayClient();
+  const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE });
+  const computeChecks = [
+    {
+      component: "agent",
+      check: "runtime-status",
+      state: "unknown",
+      checkedAt: null,
+      code: "UNAVAILABLE",
+    },
+  ];
+  computeDriver.diagnoseAgentDeployment = async (binding) => ({
+    revisionId: binding.revision.id,
+    observedAt: new Date().toISOString(),
+    checks: computeChecks,
+  });
+  const fixture = await createRuntimeLogFixture({
+    computeDriver,
+    sandboxDriver: openShellSandboxDriver(gateway.client),
+  });
+  const target = await fixture.deployAgent("harness-lost");
+  const diagnosticsPath = target.runtimePath.replace(/\/runtime$/, "/diagnostics");
+  const record = (phase, revisionId = target.revisionId) => ({
+    name: "sb-x",
+    labels: {},
+    annotations: { "openclaw.dev/revision-id": revisionId },
+    serviceUrls: {},
+    phase,
+  });
+  // The full phase table is unit-tested below; the routes are checked on representative
+  // records, under the per-Agent runtime route rate limit.
+  for (const [sandbox, harness, check] of [
+    [record("SANDBOX_PHASE_READY"), { state: "running" }, { state: "succeeded" }],
+    // A deleted or evicted Pod (dogfood d2) and a Harness that exited 0 under a live supervisor (d3).
+    [
+      record("SANDBOX_PHASE_ERROR"),
+      { state: "lost", code: "SANDBOX_FAILED" },
+      { state: "failed", code: "SANDBOX_FAILED" },
+    ],
+    [
+      record("SANDBOX_PHASE_COMPLETED"),
+      { state: "lost", code: "HARNESS_EXITED" },
+      { state: "failed", code: "HARNESS_EXITED" },
+    ],
+    [
+      undefined,
+      { state: "lost", code: "SANDBOX_MISSING" },
+      { state: "failed", code: "SANDBOX_MISSING" },
+    ],
+    [
+      record("SANDBOX_PHASE_STARTING"),
+      { state: "starting" },
+      { state: "unknown", code: "STARTING" },
+    ],
+    // A record another revision owns under this name is refused, not trusted.
+    [
+      record("SANDBOX_PHASE_READY", "rev_00000000-0000-4000-8000-0000000000ff"),
+      { state: "unknown", code: "UNAVAILABLE" },
+      { state: "unknown", code: "UNAVAILABLE" },
+    ],
+  ]) {
+    gateway.state.sandbox = sandbox;
+    const runtime = await fixture.request("GET", target.runtimePath);
+    assert.equal(runtime.status, 200, runtime.text);
+    assert.deepEqual(runtime.data.harness, harness, JSON.stringify(sandbox));
+    const diagnostics = await fixture.request("POST", diagnosticsPath);
+    assert.equal(diagnostics.status, 200, diagnostics.text);
+    const [first, ...rest] = diagnostics.data.checks;
+    assert.deepEqual(
+      { ...first, checkedAt: undefined },
+      { component: "agent", check: "sandbox", checkedAt: undefined, ...check },
+      JSON.stringify(sandbox),
+    );
+    assert.match(first.checkedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.deepEqual(rest, computeChecks);
+  }
+  const read = gateway.requests.find((request) => request.getSandbox !== undefined).getSandbox;
+  assert.equal(read.workspace, SANDBOX_NAMESPACE);
+  assert.match(read.name, /^sb-[0-9a-f]+$/);
+
+  // An unreadable record is unknown; the gateway's error text never reaches the caller.
+  gateway.state.sandboxError = Object.assign(new Error("permission denied: sandbox:read secret"), {
+    code: 7,
+  });
+  const runtime = await fixture.request("GET", target.runtimePath);
+  assert.equal(runtime.status, 200, runtime.text);
+  assert.deepEqual(runtime.data.harness, { state: "unknown", code: "UNAVAILABLE" });
+  assert.equal(runtime.text.includes("sandbox:read"), false);
+  const diagnostics = await fixture.request("POST", diagnosticsPath);
+  assert.equal(diagnostics.status, 200, diagnostics.text);
+  assert.equal(diagnostics.data.checks[0].code, "UNAVAILABLE");
+  assert.equal(diagnostics.text.includes("sandbox:read"), false);
+
+  // The lead check never pushes the description past the 32-check cap.
+  gateway.state.sandboxError = undefined;
+  gateway.state.sandbox = record("SANDBOX_PHASE_ERROR");
+  computeChecks.splice(
+    0,
+    computeChecks.length,
+    ...Array.from({ length: 32 }, (_, index) => ({
+      component: "gateway",
+      check: `check-${index}`,
+      state: "succeeded",
+      checkedAt: null,
+    })),
+  );
+  const capped = await fixture.request("POST", diagnosticsPath);
+  assert.equal(capped.status, 200, capped.text);
+  assert.equal(capped.data.checks.length, 32);
+  assert.equal(capped.data.checks[0].code, "SANDBOX_FAILED");
+  // Observation reads only; nothing else in OpenShell was touched.
+  assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
+});
+
+test("OpenShell Sandbox phases map to a Harness observation by name and number", () => {
+  for (const [phases, expected] of [
+    [["SANDBOX_PHASE_READY", 2], { state: "running" }],
+    [["SANDBOX_PHASE_PROVISIONING", 1, "SANDBOX_PHASE_STARTING", 8], { state: "starting" }],
+    [["SANDBOX_PHASE_ERROR", 3], { state: "lost", code: "SANDBOX_FAILED" }],
+    [["SANDBOX_PHASE_DELETING", 4], { state: "lost", code: "SANDBOX_DELETING" }],
+    [
+      ["SANDBOX_PHASE_STOPPING", 6, "SANDBOX_PHASE_STOPPED", 7],
+      { state: "lost", code: "SANDBOX_STOPPED" },
+    ],
+    [["SANDBOX_PHASE_COMPLETED", 9], { state: "lost", code: "HARNESS_EXITED" }],
+    [
+      ["SANDBOX_PHASE_UNKNOWN", 5, "SANDBOX_PHASE_UNSPECIFIED", 0, undefined, "NEW"],
+      { state: "unknown" },
+    ],
+  ]) {
+    for (const phase of phases) {
+      assert.deepEqual(
+        harnessObservation(phase === undefined ? {} : { phase }),
+        expected,
+        String(phase),
+      );
+    }
+  }
+  assert.deepEqual(harnessObservation(undefined), { state: "lost", code: "SANDBOX_MISSING" });
+});
+
+test("the OpenShell Sandbox Driver observes only its own dedicated revisions", async () => {
+  const gateway = logOnlyGatewayClient();
+  const driver = openShellSandboxDriver(gateway.client);
+  const namespace = { id: "ns_1", name: SANDBOX_NAMESPACE, status: "ready", createdAt: "x" };
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000000001",
+    namespaceId: namespace.id,
+    agentId: "agt_1",
+    sandboxDriverId: driver.id,
+    harness: { id: "codex", mode: "dedicated" },
+  };
+  const signal = AbortSignal.timeout(2_000);
+  for (const context of [
+    { namespace, revision: { ...revision, sandboxDriverId: "another-sandbox" }, signal },
+    { namespace: { ...namespace, id: "ns_2" }, revision, signal },
+    { namespace, revision: { ...revision, harness: { id: "openclaw", mode: "embedded" } }, signal },
+  ]) {
+    await assert.rejects(driver.observeHarness(context), /outside its selected dedicated/);
+  }
+  assert.deepEqual(gateway.requests, [], "a refused observation reads nothing");
+  gateway.state.sandbox = {
+    name: "sb-x",
+    labels: {},
+    annotations: { "openclaw.dev/revision-id": revision.id },
+    serviceUrls: {},
+    phase: "SANDBOX_PHASE_COMPLETED",
+  };
+  assert.deepEqual(await driver.observeHarness({ namespace, revision, signal }), {
+    state: "lost",
+    code: "HARNESS_EXITED",
+  });
+  assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
+});
+
 test("without a log-reading Sandbox Driver the sandbox source is absent", async () => {
   const fixture = await createRuntimeLogFixture();
   const target = await fixture.deployAgent("no-sandbox");
@@ -542,6 +739,7 @@ test("without a log-reading Sandbox Driver the sandbox source is absent", async 
     runtime.data.sources.some(({ id }) => id === "sandbox"),
     false,
   );
+  assert.equal("harness" in runtime.data, false, "an embedded Agent has no Harness Sandbox");
   const logs = await fixture.request("GET", target.logsPath("source=sandbox"));
   assert.equal(logs.status, 400, logs.text);
   assert.equal(logs.body.error.code, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");

@@ -897,6 +897,32 @@
           "data": {
             "additionalProperties": false,
             "properties": {
+              "harness": {
+                "additionalProperties": false,
+                "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox will not serve this revision again; deploy the Agent again to replace it.",
+                "properties": {
+                  "code": {
+                    "anyOf": [
+                      { "const": "SANDBOX_MISSING", "type": "string" },
+                      { "const": "SANDBOX_DELETING", "type": "string" },
+                      { "const": "SANDBOX_STOPPED", "type": "string" },
+                      { "const": "SANDBOX_FAILED", "type": "string" },
+                      { "const": "HARNESS_EXITED", "type": "string" },
+                      { "const": "UNAVAILABLE", "type": "string" }
+                    ]
+                  },
+                  "state": {
+                    "anyOf": [
+                      { "const": "running", "type": "string" },
+                      { "const": "starting", "type": "string" },
+                      { "const": "lost", "type": "string" },
+                      { "const": "unknown", "type": "string" }
+                    ]
+                  }
+                },
+                "required": ["state"],
+                "type": "object"
+              },
               "observedAt": {
                 "format": "date-time",
                 "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
@@ -17965,6 +17991,32 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "harness": {
+                          "additionalProperties": false,
+                          "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox will not serve this revision again; deploy the Agent again to replace it.",
+                          "properties": {
+                            "code": {
+                              "anyOf": [
+                                { "const": "SANDBOX_MISSING", "type": "string" },
+                                { "const": "SANDBOX_DELETING", "type": "string" },
+                                { "const": "SANDBOX_STOPPED", "type": "string" },
+                                { "const": "SANDBOX_FAILED", "type": "string" },
+                                { "const": "HARNESS_EXITED", "type": "string" },
+                                { "const": "UNAVAILABLE", "type": "string" }
+                              ]
+                            },
+                            "state": {
+                              "anyOf": [
+                                { "const": "running", "type": "string" },
+                                { "const": "starting", "type": "string" },
+                                { "const": "lost", "type": "string" },
+                                { "const": "unknown", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": ["state"],
+                          "type": "object"
+                        },
                         "observedAt": {
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",

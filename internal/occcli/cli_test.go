@@ -649,6 +649,36 @@ func TestAgentRuntimePrintsPodsAndSources(t *testing.T) {
 	}
 }
 
+func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
+	for _, test := range []struct {
+		harness any
+		want    string
+	}{
+		{
+			map[string]any{"state": "lost", "code": "HARNESS_EXITED"},
+			"Harness Sandbox: lost (HARNESS_EXITED). It will not serve this revision again; deploy the Agent again to replace it.\n\n",
+		},
+		{map[string]any{"state": "running"}, "Harness Sandbox: running\n\n"},
+		{map[string]any{"state": "unknown", "code": "UNAVAILABLE"}, "Harness Sandbox: unknown (UNAVAILABLE)\n\n"},
+		// Anything but OCC's fixed states and codes is not echoed to the terminal.
+		{map[string]any{"state": "lost\u202e", "code": "x\u001b[2J"}, "Harness Sandbox: unknown\n\n"},
+		{nil, "No resources found."},
+	} {
+		var out strings.Builder
+		app := &application{out: &out}
+		description := map[string]any{"pods": []any{}, "sources": []any{}}
+		if test.harness != nil {
+			description["harness"] = test.harness
+		}
+		if err := app.printRuntime(description); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(out.String(), test.want) {
+			t.Errorf("harness %v: output = %q, want prefix %q", test.harness, out.String(), test.want)
+		}
+	}
+}
+
 func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
