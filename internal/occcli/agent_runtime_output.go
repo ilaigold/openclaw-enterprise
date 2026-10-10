@@ -140,7 +140,7 @@ func runtimeHarnessLine(resource map[string]any) string {
 		line += " (" + code + ")"
 	}
 	if state == "lost" {
-		line += ". It will not serve this revision again; deploy the Agent again to replace it."
+		line += ". OCC will not restart it; deploy the Agent again to replace it."
 	}
 	return line
 }

@@ -1452,7 +1452,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
         {
           additionalProperties: false,
           description:
-            "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox will not serve this revision again; deploy the Agent again to replace it.",
+            "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it.",
         },
       ),
     ),

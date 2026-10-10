@@ -656,7 +656,7 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 	}{
 		{
 			map[string]any{"state": "lost", "code": "HARNESS_EXITED"},
-			"Harness Sandbox: lost (HARNESS_EXITED). It will not serve this revision again; deploy the Agent again to replace it.\n\n",
+			"Harness Sandbox: lost (HARNESS_EXITED). OCC will not restart it; deploy the Agent again to replace it.\n\n",
 		},
 		{map[string]any{"state": "running"}, "Harness Sandbox: running\n\n"},
 		{map[string]any{"state": "unknown", "code": "UNAVAILABLE"}, "Harness Sandbox: unknown (UNAVAILABLE)\n\n"},
