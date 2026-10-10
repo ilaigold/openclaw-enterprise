@@ -284,7 +284,7 @@ test(
       assert.equal((await signIn(memberEmail, memberPassword, "203.0.113.21")).statusCode, 200);
     });
     await t.test(
-      "a normalized legacy email retains password access and malformed sign-ins are audited",
+      "password-only refuses unsupported stored email while preserving unusual passwords and denial audits",
       async () => {
         const legacyEmail = "legacy-default-\ud800@example.test";
         const storedEmail = "legacy-default-\ufffd@example.test";
@@ -307,10 +307,36 @@ test(
         );
         const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
         assert.equal(stored.rows[0].email, storedEmail);
-        const accepted = await signIn(storedEmail, legacyPassword);
+        // Better Auth's existing password-only validator rejects this stored spelling.
+        // The SQL assertion above proves encoding, not successful account access.
+        const unsupported = await signIn(storedEmail, legacyPassword);
+        assert.equal(unsupported.statusCode, 400, unsupported.body);
+        assert.equal(unsupported.json().error.code, "FORBIDDEN");
+        assert.equal(unsupported.headers["set-cookie"], undefined);
+        const sessions = await pool.query(
+          "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
+          [userId],
+        );
+        assert.equal(sessions.rows[0].count, 0);
+
+        // The identical unusual password remains usable with a supported email address.
+        const ordinaryEmail = "ordinary-unusual-default@example.test";
+        const ordinary = await app.inject({
+          method: "POST",
+          url: "/api/auth/accounts",
+          headers,
+          payload: { email: ordinaryEmail, password: memberPassword },
+        });
+        assert.equal(ordinary.statusCode, 201, ordinary.body);
+        const ordinaryId = ordinary.json().data.id;
+        await pool.query(
+          "UPDATE occ.account SET password = $1 WHERE user_id = $2 AND provider_id = 'credential'",
+          [await hashPassword(legacyPassword), ordinaryId],
+        );
+        const accepted = await signIn(ordinaryEmail, legacyPassword);
         assert.equal(accepted.statusCode, 200, accepted.body);
         const cookie = cookieHeaderFromSetCookie(accepted.headers["set-cookie"]);
-        assert.equal((await sessionOf(cookie)).user.id, userId);
+        assert.equal((await sessionOf(cookie)).user.id, ordinaryId);
         const state = new PostgresPlatformState(pool);
         const denials = async () =>
           (await state.transact((unit) => unit.audit.list())).filter(

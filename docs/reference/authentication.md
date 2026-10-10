@@ -125,7 +125,9 @@ Sign-in rejects NUL or unpaired-surrogate emails with `400 INVALID_REQUEST`
 before account or known-device State reads. Both profiles retain denial audits
 and budget accounting, including recovery-only and counted `503` audit failures.
 Admission-limited attempts remain `429`. Passwords are not checked for these
-characters. Previously normalized email addresses require literal U+FFFD.
+characters. Password-only sign-in rejects stored U+FFFD email addresses with
+`400 FORBIDDEN` and no session; literal spelling does not restore access.
+Guarded profiles pass that spelling to normal account, password and recovery checks.
 
 In both profiles, after 10 failed sign-ins per minute per email, or 20
 per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),

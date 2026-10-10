@@ -451,3 +451,83 @@ for (const profile of ["password-only", "guarded", "recovery-only"]) {
     assert.deepEqual(reads, []);
   });
 }
+
+// Preserve the dependency's existing email contract; the password itself is supported.
+test("password-only distinguishes unsupported stored email from an unusual password", async () => {
+  const outcomes = [];
+  const { auth, memoryDatabase } = controller({
+    accepted: async (id) => outcomes.push(["accepted", id]),
+    refused: async () => outcomes.push(["refused"]),
+  });
+  const unusualPassword = "account-password-\u0000-\ud800-\ufffd";
+  const ordinary = await auth.createAccount({
+    email: "ordinary-unusual@example.test",
+    password: unusualPassword,
+  });
+  await auth.createAccount({ email: "stored-\ufffd@example.test", password: unusualPassword });
+  assert.equal(
+    (await signIn(auth, { email: ordinary.email, password: unusualPassword })).status,
+    200,
+  );
+  const sessions = memoryDatabase.session.length;
+  const refused = await signIn(auth, {
+    email: "stored-\ufffd@example.test",
+    password: unusualPassword,
+  });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.payload.error.code, "FORBIDDEN");
+  assert.equal(refused.headers["set-cookie"], undefined);
+  assert.equal(
+    memoryDatabase.session.length,
+    sessions,
+    "unsupported stored email issues no session",
+  );
+  assert.deepEqual(outcomes, [["accepted", ordinary.id], ["refused"]]);
+});
+
+for (const passwordSignIn of ["all", "recovery-only"]) {
+  test(`guarded ${passwordSignIn}: literal replacement email reaches normal credential checks`, async () => {
+    const reads = [];
+    const denials = [];
+    const literalEmail = "stored-\ufffd@example.test";
+    const humanLogin = createHumanLogin(
+      {
+        createAttempt: async () => {
+          throw new Error("not used");
+        },
+        consumeAttempt: async () => undefined,
+        snapshotExternal: async () => undefined,
+        snapshotPassword: async (address) => {
+          reads.push(address);
+          return undefined;
+        },
+        recordDenied: async (reason) => denials.push(reason),
+      },
+      {
+        recoveryUserId: "guarded-recovery",
+        passwordSignIn,
+        github: { clientId: "guarded-client", clientSecret: "guarded-client-secret" },
+      },
+      baseURL,
+    );
+    humanLogin.designateRecovery(literalEmail);
+    const auth = createControllerAuth({
+      mode: "development",
+      installationId: "ins_literal_email_guarded",
+      baseURL,
+      secret,
+      secureCookies: false,
+      database: memoryAdapter({ user: [], session: [], account: [], verification: [], apikey: [] }),
+      humanLogin,
+    });
+    const refused = await signIn(auth, {
+      email: literalEmail,
+      password: "account-password-\u0000-\ud800-\ufffd",
+    });
+    // Missing-account State is a denial, not fabricated successful authentication.
+    assert.equal(refused.status, 401);
+    assert.equal(refused.headers["set-cookie"], undefined);
+    assert.deepEqual(reads, [literalEmail]);
+    assert.deepEqual(denials, ["INVALID_CREDENTIALS"]);
+  });
+}
