@@ -31,6 +31,9 @@ type runner struct {
 	// automaticNodeResolverOrigin names its source, such as "this host's upstream".
 	automaticNodeResolver       string
 	automaticNodeResolverOrigin string
+	// legacyNATUnconfirmed records that the preflight could not confirm the
+	// host's legacy iptables nat table, so a k3d failure names it.
+	legacyNATUnconfirmed bool
 }
 
 func newRunner(opts Options) *runner {
@@ -115,11 +118,15 @@ func (r *runner) selectContainerEngine(ctx context.Context, requested string, re
 			if json.Unmarshal(data, &server) != nil {
 				continue
 			}
-			genuine := strings.Contains(strings.ToLower(server.Platform.Name), "docker")
+			platform := strings.ToLower(server.Platform.Name)
+			genuine := strings.Contains(platform, "docker")
+			podman := strings.Contains(platform, "podman")
 			for _, component := range server.Components {
 				genuine = genuine || component.Name == "Engine"
+				podman = podman || strings.EqualFold(component.Name, "Podman Engine")
 			}
-			if !genuine {
+			// Docker CLI formatting can append Engine to a Podman server's components.
+			if podman || !genuine {
 				continue
 			}
 		}
