@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -38,6 +38,34 @@ export function fixturePreparationMetrics(stderr) {
   return stderr.split("\n").flatMap((line) => {
     const match = line.match(/^\[prepare:k3d-fixture-configuration\] (\{.*\})$/);
     return match ? [JSON.parse(match[1])] : [];
+  });
+}
+
+// spawnSync's result shape and limits, asynchronously: it resolves once the child has
+// exited and closed its output, and a child still running after 30 s gets SIGTERM and
+// an ETIMEDOUT error.
+function runAsync(env, script, args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
+      cwd: repositoryRoot,
+      env,
+    });
+    const output = { stdout: "", stderr: "" };
+    let error;
+    for (const stream of ["stdout", "stderr"]) {
+      child[stream].setEncoding("utf8");
+      child[stream].on("data", (chunk) => (output[stream] += chunk));
+    }
+    child.stdin.end();
+    const timer = setTimeout(() => {
+      error = Object.assign(new Error(`${script} ETIMEDOUT`), { code: "ETIMEDOUT" });
+      child.kill("SIGTERM");
+    }, 30_000);
+    child.on("error", (spawnError) => (error ??= spawnError));
+    child.on("close", (status, signal) => {
+      clearTimeout(timer);
+      resolve({ status, signal, error, ...output });
+    });
   });
 }
 
@@ -724,11 +752,14 @@ throw new Error("Unexpected external command: " + command + " " + JSON.stringify
       timeout: 30_000,
       env,
     });
+  const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
   return {
     statePath,
     githubEnv,
-    prepare: () =>
-      run("prepare.mjs", ["--lane", lane, "--state", statePath, "--github-env", githubEnv]),
+    prepare: () => run("prepare.mjs", prepareArgs),
+    // The same results without blocking the event loop, so concurrent tests overlap.
+    prepareAsync: () => runAsync(env, "prepare.mjs", prepareArgs),
+    cleanupAsync: () => runAsync(env, "cleanup.mjs", ["--state", statePath]),
     warmImageCache: (args = []) =>
       run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
     prepareFile: (file) =>
