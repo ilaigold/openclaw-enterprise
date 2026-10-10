@@ -1127,6 +1127,7 @@ function chartGatewaySecretNames(releaseName, namespace) {
 // listed before it. cert-manager writes the generated Gateway Secrets, and Envoy Gateway accepts
 // every entry of the gateway API key Secret as a client key (findings 1044, 1046, 1048). The
 // enabled log collector's config and exporter Secrets stay at the chart defaults (finding 1054).
+// The public CA settings may share one Secret with each other, as the chart allows (finding 1059).
 const chartCollectorSecretNames = ["occ-otel-collector-config", "occ-otel-collector-exporter"];
 function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
   const generated = chartGatewaySecretNames(releaseName, namespace);
@@ -1147,7 +1148,7 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
     ...(values.backend?.chatgpt?.enabled
       ? [["codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName]]
       : []),
-    ["controlPlane.databaseCa.secretName", values.database.caSecretName],
+    ["controlPlane.databaseCa.secretName", values.database.caSecretName, "ca"],
     ["controlPlane.gatewayApiKeySecretName", values.gatewayRouting.apiKeySecretName],
     ...Object.entries(signInSecretDefaults)
       .filter(([name]) => values.auth[name] !== undefined)
@@ -1156,19 +1157,25 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
         values.auth[name].secretName ?? fallback,
       ]),
     ...(repository.enabled
-      ? ["serviceConfigSecretName", "appKeySecretName", "tlsSecretName", "publicCaSecretName"].map(
-          (key) => [`repository.${key}`, repository[key]],
-        )
+      ? [
+          ...["serviceConfigSecretName", "appKeySecretName", "tlsSecretName"].map((key) => [
+            `repository.${key}`,
+            repository[key],
+          ]),
+          ["repository.publicCaSecretName", repository.publicCaSecretName, "ca"],
+        ]
       : []),
   ];
-  for (const [field, name] of fields) {
+  const groups = new Map();
+  for (const [field, name, group] of fields) {
     if (!name) {
       continue;
     }
     const holder = holders.get(name);
     if (holder === undefined) {
       holders.set(name, `${name} is also ${field}`);
-    } else {
+      groups.set(name, group);
+    } else if (group === undefined || groups.get(name) !== group) {
       diagnostics.errors.push(`${field} must name a dedicated Secret; ${holder}.`);
     }
   }

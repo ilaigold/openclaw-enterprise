@@ -454,17 +454,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $cookieDomain (or (eq $routing.sandbox.domain $cookieDomain) (hasSuffix (printf ".%s" $cookieDomain) $routing.sandbox.domain) (hasSuffix (printf ".%s" $routing.sandbox.domain) $cookieDomain)) -}}{{- fail "gatewayRouting.sandbox.domain must be outside the OCE shared session cookie domain" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
-{{- /* Dedicated Secrets (findings 1037, 1044, 1046, 1048, 1054): each Secret an enabled feature reads, or cert-manager writes, needs its own name. A shared Secret mounts other credentials into a component, is overwritten by cert-manager (the Gateway TLS and root CA), or turns its other entries into keys Envoy Gateway's apiKeyAuth accepts (gatewayRouting.apiKeySecretName). Chart-named and generated Secrets come first and the log collector's last, so a refusal names the operator's setting. */ -}}
+{{- /* Dedicated Secrets (findings 1037, 1044, 1046, 1048, 1054): each Secret an enabled feature reads, or cert-manager writes, needs its own name. A shared Secret mounts other credentials into a component, is overwritten by cert-manager (the Gateway TLS and root CA), or turns its other entries into keys Envoy Gateway's apiKeyAuth accepts (gatewayRouting.apiKeySecretName). Chart-named and generated Secrets come first and the log collector's last, so a refusal names the operator's setting. The public CA settings (marked "ca") may share one Secret with each other, such as one trust bundle: each mounts only its selected key, which holds public data (finding 1059). They stay apart from database.secretName, whose migration URL key a matching CA key would mount into the API and worker. */ -}}
 {{- $routing := .Values.gatewayRouting -}}
 {{- $roles := list -}}
-{{- if $routing.enabled -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
+{{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}
 {{- if $routing.enabled -}}{{- $roles = append $roles (list "gatewayRouting.tlsSecretName" (include "openclaw.gatewayRouting.tlsSecretName" .)) -}}{{- end -}}
 {{- if .Values.backend.chatgpt.enabled -}}{{- $roles = append $roles (list "backend.chatgpt.secretName" .Values.backend.chatgpt.secretName) -}}{{- end -}}
-{{- $roles = append $roles (list "database.caSecretName" .Values.database.caSecretName) -}}
+{{- $roles = append $roles (list "database.caSecretName" .Values.database.caSecretName "ca") -}}
 {{- if $routing.enabled -}}
 {{- if $routing.sandbox.enabled -}}{{- $roles = append $roles (list "gatewayRouting.sandbox.tlsSecretName" $routing.sandbox.tlsSecretName) -}}{{- end -}}
-{{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName)) -}}
+{{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName "ca")) -}}
 {{- end -}}
 {{- range $provider := list "github" "google" "oidc" -}}
 {{- $signIn := index $.Values.auth $provider -}}
@@ -474,17 +474,24 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
 {{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
-{{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}{{- $roles = append $roles (list (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key)) -}}{{- end -}}
+{{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" -}}{{- $roles = append $roles (list (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key)) -}}{{- end -}}
+{{- $roles = append $roles (list "repositoryCredentials.publicCaSecretName" .Values.repositoryCredentials.publicCaSecretName "ca") -}}
 {{- end -}}
 {{- if .Values.logging.collector.enabled -}}
 {{- range $key := list "configSecretName" "envSecretName" -}}{{- $roles = append $roles (list (printf "logging.collector.%s" $key) (index $.Values.logging.collector $key)) -}}{{- end -}}
 {{- end -}}
 {{- $holders := dict -}}
+{{- $groups := dict -}}
 {{- range $role := $roles -}}
 {{- if index $role 1 -}}
 {{- $name := toString (index $role 1) -}}
-{{- if hasKey $holders $name -}}{{- fail (printf "%s must name a dedicated Secret; %s is also %s" (index $role 0) $name (get $holders $name)) -}}{{- end -}}
+{{- $group := ternary (last $role) "" (eq (len $role) 3) -}}
+{{- if not (hasKey $holders $name) -}}
 {{- $_ := set $holders $name (index $role 0) -}}
+{{- $_ := set $groups $name $group -}}
+{{- else if not (and $group (eq $group (get $groups $name))) -}}
+{{- fail (printf "%s must name a dedicated Secret; %s is also %s" (index $role 0) $name (get $holders $name)) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

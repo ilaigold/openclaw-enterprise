@@ -3666,6 +3666,85 @@ test(
   },
 );
 
+test("the chart lets the public CA settings share one trust bundle Secret", tooling, async () => {
+  // Finding 1059: each CA setting mounts only its selected key of public trust data, so one
+  // trust bundle Secret may serve all of them. Private and cert-manager Secrets stay dedicated.
+  const base = {
+    ...externalGatewayRoutingValues,
+    "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+    "gatewayRouting.issuerRef.group": "cert-manager.io",
+    "gatewayRouting.caSecretName": "occ-private-ca",
+    "gatewayRouting.caSecretKey": "ca.crt",
+    ...databaseCaValues,
+    ...repositoryCredentialValues,
+  };
+  const settings = [
+    "database.caSecretName",
+    "gatewayRouting.caSecretName",
+    "repositoryCredentials.publicCaSecretName",
+  ];
+  for (const [index, first] of settings.entries()) {
+    for (const second of settings.slice(index + 1)) {
+      await render({ ...base, [first]: "occ-trust-bundle", [second]: "occ-trust-bundle" });
+    }
+  }
+  const shared = Object.fromEntries(settings.map((setting) => [setting, "occ-trust-bundle"]));
+  const objects = await resources((await render({ ...base, ...shared })).stdout);
+  const api = objects.find(
+    (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
+  ).spec.template.spec;
+  assert.deepEqual(
+    api.volumes
+      .filter((volume) => volume.secret?.secretName === "occ-trust-bundle")
+      .map((volume) => [volume.name, volume.secret.items.map(({ key }) => key)])
+      .sort(),
+    [
+      ["database-ca", ["ca.pem"]],
+      ["gateway-ca", ["ca.crt"]],
+      ["repository-public-ca", ["ca.crt"]],
+    ],
+  );
+  // The bundle still may not hold a credential or a Secret cert-manager writes.
+  for (const [setting, secret, message] of [
+    ["database.caSecretName", "occ-database", "database.caSecretName / database.secretName"],
+    [
+      "repositoryCredentials.tlsSecretName",
+      "occ-trust-bundle",
+      "repositoryCredentials.tlsSecretName / database.caSecretName",
+    ],
+    [
+      "gatewayRouting.apiKeySecretName",
+      "occ-trust-bundle",
+      "gatewayRouting.apiKeySecretName / database.caSecretName",
+    ],
+    [
+      "gatewayRouting.tlsSecretName",
+      "occ-trust-bundle",
+      "database.caSecretName / gatewayRouting.tlsSecretName",
+    ],
+  ]) {
+    const [refused, holder] = message.split(" / ");
+    await assert.rejects(
+      render({ ...base, ...shared, [setting]: secret }),
+      ({ code, stderr }) =>
+        code !== 0 &&
+        stderr.includes(`${refused} must name a dedicated Secret; ${secret} is also ${holder}`),
+      `${setting} = ${secret}`,
+    );
+  }
+  // An external issuer creates no root CA Secret, so its generated name is free.
+  const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+  await render({ ...base, ...githubLoginValues, "auth.github.secretName": gatewayRoot });
+  await assert.rejects(
+    render({
+      ...gatewayRoutingValues,
+      ...githubLoginValues,
+      "auth.github.secretName": gatewayRoot,
+    }),
+    /auth\.github\.secretName must name a dedicated Secret; \S+ is also the generated Gateway root CA/,
+  );
+});
+
 test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,

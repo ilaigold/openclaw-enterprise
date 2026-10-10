@@ -15,7 +15,9 @@ real Installation.
 
 **What breaks.** Helm refuses a Secret name shared by two Secret settings
 (installation, auth, database, database CA, sign-in, ChatGPT, kubeconfig,
-repository, sandbox, Gateway or Collector) or a generated Gateway Secret.
+repository, sandbox, Gateway or Collector) or a generated Gateway Secret. The
+public CA settings (database, external Gateway and repository) may share one
+with each other.
 Envoy Gateway accepts every entry of the gateway API key Secret as a client
 key, so sharing it made the ChatGPT admin key, a CA certificate or a TLS key a
 valid `x-api-key` on the Agent Gateway listener: such an Installation was never

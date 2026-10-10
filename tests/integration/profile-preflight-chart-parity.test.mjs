@@ -961,6 +961,34 @@ test(
         chartError: new RegExp(refusal?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "^$"),
       });
     }
+    // Finding 1059: the database and repository public CA settings may share one trust bundle,
+    // but the bundle stays apart from the repository credentials.
+    const repositoryInput = {
+      enabled: true,
+      image: `registry.example.invalid/repository@sha256:${"c".repeat(64)}`,
+      backendId: "github-primary",
+      registryConfigMapName: "occ-repository-registry",
+      serviceConfigSecretName: "occ-repository-config",
+      appKeySecretName: "occ-repository-app-key",
+      tlsSecretName: "occ-repository-tls",
+      publicCaSecretName: "occ-repository-ca",
+      upstreamCidrs: ["192.0.2.30/32"],
+    };
+    for (const key of ["publicCaSecretName", "tlsSecretName"]) {
+      const repositoryShared = { ...repositoryInput, [key]: "occ-trust-bundle" };
+      assertParity({
+        label: `trust bundle shared with repository ${key}`,
+        extraInput: { repository: repositoryShared },
+        controlPlane: { databaseCa: { secretName: "occ-trust-bundle" } },
+        values: {
+          database: { caSecretName: "occ-trust-bundle" },
+          repositoryCredentials: repositoryShared,
+        },
+        accepted: key === "publicCaSecretName",
+        chartError:
+          /repositoryCredentials\.tlsSecretName must name a dedicated Secret; occ-trust-bundle is also database\.caSecretName/,
+      });
+    }
     // Finding 1054: the enabled log collector's Secrets are in the same table.
     for (const enabled of [false, true]) {
       const collector = enabled ? { enabled, exporter: { cidr: "192.0.2.40/32" } } : { enabled };
