@@ -1432,6 +1432,10 @@ function buildRendered(profile, parsed, diagnostics) {
         controlPlane,
         ["controlPlane", "gatewayApiKeySecretName"],
         diagnostics,
+        {
+          validate: isKubernetesResourceName,
+          description: "a Kubernetes resource name of at most 253 characters",
+        },
       ),
       envoyNamespace,
     },
