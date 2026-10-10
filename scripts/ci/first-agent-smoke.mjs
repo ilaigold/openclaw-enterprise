@@ -247,7 +247,7 @@ async function exportEnvironment(values) {
 // images
 
 function cacheArguments(role) {
-  // Restore only: main's cache is written by the warm workflow and main pushes.
+  // Restore only: main's cache is written by the warm workflow alone.
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
     !process.env.ACTIONS_RUNTIME_TOKEN ||
