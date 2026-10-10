@@ -64,6 +64,15 @@ const agentNativeAdminValues = {
   "agentNativeAdmin.domain": "agents.example.invalid",
   "agentNativeAdmin.sharedCookieDomain": "example.invalid",
 };
+// The sandbox listener's wildcard TLS Secret, on top of gateway routing.
+const sandboxValues = {
+  ...agentNativeAdminValues,
+  "gatewayRouting.sandbox.enabled": "true",
+  "gatewayRouting.sandbox.domain": "previews.example.test",
+  "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+  "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+    "public-ingress",
+};
 const githubLoginValues = {
   "auth.github.enabled": "true",
   "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
@@ -225,14 +234,6 @@ test(
 );
 
 test("sandbox ingress uses a separate listener outside OCE cookie scope", tooling, async () => {
-  const sandboxValues = {
-    ...agentNativeAdminValues,
-    "gatewayRouting.sandbox.enabled": "true",
-    "gatewayRouting.sandbox.domain": "previews.example.test",
-    "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
-    "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-      "public-ingress",
-  };
   const rendered = await resources((await render(sandboxValues)).stdout);
   const gateway = rendered.find((item) => item.kind === "Gateway");
   const listener = gateway.spec.listeners.find((item) => item.name === "sandbox");
@@ -522,16 +523,18 @@ test(
     );
     await assert.rejects(
       render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
-      /dedicated Secrets/,
+      /executionCluster\.apiKubeconfigSecretName must name a dedicated Secret; occ-auth is also auth\.secretName/,
     );
-    // Optional credential Secrets count once enabled (finding 1046): the ChatGPT admin and
-    // sign-in Secrets, and the Gateway TLS and root CA Secrets cert-manager writes.
+    // Optional credential Secrets count once enabled (findings 1046, 1048): the ChatGPT admin,
+    // sign-in, database CA and sandbox TLS Secrets, and the Gateway Secrets cert-manager writes.
     const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
     for (const [values, secret, role] of [
-      [chatgptValues, "occ-chatgpt-admin", "ChatGPT Backend"],
-      [githubLoginValues, "occ-github-login", "auth.github sign-in"],
-      [gatewayRoutingValues, "oce-agent-gateways-tls", "Gateway TLS"],
-      [gatewayRoutingValues, gatewayRoot, "generated Gateway root CA"],
+      [chatgptValues, "occ-chatgpt-admin", "backend.chatgpt.secretName"],
+      [githubLoginValues, "occ-github-login", "auth.github.secretName"],
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
+      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
+      [databaseCaValues, "occ-rds-ca", "database.caSecretName"],
+      [sandboxValues, "preview-wildcard", "gatewayRouting.sandbox.tlsSecretName"],
     ]) {
       for (const key of ["apiKubeconfigSecretName", "workerKubeconfigSecretName"]) {
         await assert.rejects(
@@ -539,7 +542,7 @@ test(
           ({ code, stderr }) =>
             code !== 0 &&
             stderr.includes(
-              `executionCluster kubeconfigs require dedicated Secrets distinct from platform credentials; ${secret} is also the ${role} Secret`,
+              `executionCluster.${key} must name a dedicated Secret; ${secret} is also ${role}`,
             ),
           `${key} = ${secret}`,
         );
@@ -3459,34 +3462,26 @@ test(
     // Envoy Gateway's apiKeyAuth accepts every entry of the gateway API key Secret as a
     // client key, so a shared Secret would make the ChatGPT admin key, a CA certificate or a
     // TLS key a valid x-api-key.
-    const sandboxValues = {
-      ...agentNativeAdminValues,
-      "gatewayRouting.sandbox.enabled": "true",
-      "gatewayRouting.sandbox.domain": "previews.example.test",
-      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
-      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
-        "public-ingress",
-    };
     for (const [values, shared, refusal] of [
       [
         chatgptValues,
         { "gatewayRouting.apiKeySecretName": "occ-chatgpt-admin" },
-        /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/,
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-chatgpt-admin is also backend\.chatgpt\.secretName/,
       ],
       [
         chatgptValues,
         { "backend.chatgpt.secretName": "occ-gateway-api-key" },
-        /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/,
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-gateway-api-key is also backend\.chatgpt\.secretName/,
       ],
       [
         databaseCaValues,
         { "database.caSecretName": "occ-gateway-api-key" },
-        /gatewayRouting\.apiKeySecretName must differ from the database CA Secret/,
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-gateway-api-key is also database\.caSecretName/,
       ],
       [
         sandboxValues,
         { "gatewayRouting.sandbox.tlsSecretName": "occ-gateway-api-key" },
-        /gatewayRouting\.apiKeySecretName must differ from the sandbox wildcard TLS Secret/,
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-gateway-api-key is also gatewayRouting\.sandbox\.tlsSecretName/,
       ],
     ]) {
       await assert.rejects(
@@ -3520,16 +3515,16 @@ test(
       "gatewayRouting.caSecretKey": "ca.crt",
     };
     for (const [routing, secret, role] of [
-      [gatewayRoutingValues, "oce-agent-gateways-tls", "Gateway TLS"],
-      [gatewayRoutingValues, gatewayRoot, "generated Gateway root CA"],
-      [externalCa, "occ-private-ca", "Gateway CA"],
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
+      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
+      [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
     ]) {
       await assert.rejects(
         render({ ...routing, ...githubLoginValues, "auth.github.secretName": secret }),
         ({ code, stderr }) =>
           code !== 0 &&
           stderr.includes(
-            `auth.github credentials must use a dedicated Secret distinct from the ${role} Secret`,
+            `auth.github.secretName must name a dedicated Secret; ${secret} is also ${role}`,
           ),
         secret,
       );
@@ -3537,6 +3532,63 @@ test(
       await render({ ...githubLoginValues, "auth.github.secretName": secret });
     }
     await render({ ...externalCa, ...githubLoginValues });
+  },
+);
+
+test(
+  "the chart refuses credential Secrets shared with the database CA or sandbox TLS Secret",
+  tooling,
+  async () => {
+    // Finding 1048: the dedicated-Secret rule covers every Secret an enabled feature reads.
+    const sandbox = {
+      ...gatewayRoutingValues,
+      ...Object.fromEntries(
+        Object.entries(sandboxValues).filter(([key]) => key.startsWith("gatewayRouting.sandbox.")),
+      ),
+    };
+    for (const [base, setting, secret, other] of [
+      [
+        { ...databaseCaValues, ...githubLoginValues },
+        "auth.github.secretName",
+        "occ-rds-ca",
+        "database.caSecretName",
+      ],
+      [
+        { ...databaseCaValues, ...repositoryCredentialValues },
+        "repositoryCredentials.appKeySecretName",
+        "occ-rds-ca",
+        "database.caSecretName",
+      ],
+      [databaseCaValues, "database.caSecretName", "occ-database", "database.secretName"],
+      [
+        { ...sandbox, ...githubLoginValues },
+        "auth.github.secretName",
+        "preview-wildcard",
+        "gatewayRouting.sandbox.tlsSecretName",
+      ],
+      [
+        { ...sandbox, ...repositoryCredentialValues },
+        "repositoryCredentials.tlsSecretName",
+        "preview-wildcard",
+        "gatewayRouting.sandbox.tlsSecretName",
+      ],
+      [
+        sandbox,
+        "gatewayRouting.sandbox.tlsSecretName",
+        "oce-agent-gateways-tls",
+        "gatewayRouting.tlsSecretName",
+      ],
+    ]) {
+      await assert.rejects(
+        render({ ...base, [setting]: secret }),
+        ({ code, stderr }) =>
+          code !== 0 &&
+          stderr.includes(`${setting} must name a dedicated Secret; ${secret} is also ${other}`),
+        `${setting} = ${secret}`,
+      );
+      // The same values with distinct names render.
+      await render(base);
+    }
   },
 );
 

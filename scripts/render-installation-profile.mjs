@@ -1094,12 +1094,13 @@ function buildInput(rawInput, diagnostics) {
   };
 }
 
-// The chart's dedicated-Secret rule for sign-in credentials (auth.github, auth.google and
-// auth.oidc): each provider's Secret must differ from the installation, database and auth
-// Secrets (left at the chart defaults here), the ChatGPT Backend and gateway API key Secrets,
-// the repository broker Secrets, the Gateway Secrets the chart generates, and the Secret of
-// each provider checked before it.
-const chartSecretNames = ["occ-installation-startup", "occ-database", "occ-auth"];
+// The installation, database and auth Secrets the profile leaves at the chart defaults, and
+// the default sign-in Secret of each provider.
+const chartSecrets = {
+  installation: "occ-installation-startup",
+  database: "occ-database",
+  auth: "occ-auth",
+};
 const signInSecretDefaults = {
   github: "occ-github-login",
   google: "occ-google-login",
@@ -1121,110 +1122,48 @@ function chartGatewaySecretNames(releaseName, namespace) {
     root: `occ-gateway-${routeLabel}-root`,
   };
 }
-function validateGatewayApiKeySecret(values, releaseName, namespace, diagnostics) {
-  const name = values.gatewayRouting.apiKeySecretName;
-  if (chartSecretNames.includes(name)) {
-    diagnostics.errors.push(
-      `controlPlane.gatewayApiKeySecretName must name a dedicated Secret; ${name} holds other credentials.`,
-    );
-    return;
-  }
+// The chart's dedicated-Secret rule (openclaw.validate), in the chart's order: each Secret the
+// profile names must differ from the chart's own and generated Secrets and from every Secret
+// listed before it. cert-manager writes the generated Gateway Secrets, and Envoy Gateway accepts
+// every entry of the gateway API key Secret as a client key (findings 1044, 1046, 1048).
+function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
   const generated = chartGatewaySecretNames(releaseName, namespace);
-  const role =
-    name === generated.tls
-      ? "Gateway TLS certificate"
-      : name === generated.root
-        ? "Gateway root CA"
-        : undefined;
-  if (role !== undefined) {
-    diagnostics.errors.push(
-      `controlPlane.gatewayApiKeySecretName must name a dedicated Secret; the chart generates ${name} for the ${role}.`,
-    );
-  }
-  // Envoy Gateway would accept the CA certificate entry as a client key too.
-  if (name !== undefined && name === values.database.caSecretName) {
-    diagnostics.errors.push(
-      `controlPlane.gatewayApiKeySecretName must name a dedicated Secret; ${name} is also controlPlane.databaseCa.secretName.`,
-    );
-  }
-}
-function signInSecretsDedicated(values, releaseName, namespace, diagnostics) {
-  const repository = values.repositoryCredentials;
-  // cert-manager writes these two, so a sign-in Secret sharing a name would be overwritten.
-  const generated = chartGatewaySecretNames(releaseName, namespace);
-  const generatedRoles = new Map([
-    [generated.tls, "Gateway TLS certificate"],
-    [generated.root, "Gateway root CA"],
-  ]);
-  const taken = [
-    ...chartSecretNames,
-    ...(values.backend?.chatgpt?.enabled ? [values.backend.chatgpt.secretName] : []),
-    values.gatewayRouting.apiKeySecretName,
-    ...(repository.enabled
-      ? [
-          repository.serviceConfigSecretName,
-          repository.appKeySecretName,
-          repository.tlsSecretName,
-          repository.publicCaSecretName,
-        ]
-      : []),
-  ];
-  for (const [name, fallback] of Object.entries(signInSecretDefaults)) {
-    if (values.auth[name] === undefined) {
-      continue;
-    }
-    const secretName = values.auth[name].secretName ?? fallback;
-    const role = generatedRoles.get(secretName);
-    if (role !== undefined) {
-      diagnostics.errors.push(
-        `controlPlane.${name}.secretName must name a dedicated Secret; the chart generates ${secretName} for the ${role}.`,
-      );
-    } else if (taken.includes(secretName)) {
-      diagnostics.errors.push(
-        `controlPlane.${name}.secretName must name a dedicated Secret; ${secretName} holds other credentials.`,
-      );
-    }
-    taken.push(secretName);
-  }
-}
-// The chart's dedicated-Secret rules for the ChatGPT admin Secret (backend.chatgpt) and the
-// repository broker Secrets, in the chart's order: each must differ from the chart Secrets,
-// the gateway API key Secret, the Gateway Secrets the chart generates, and the Secrets checked
-// before it. The gateway API key Secret holds client keys Envoy Gateway accepts (finding 1044).
-function credentialSecretsDedicated(values, releaseName, namespace, diagnostics) {
-  const generated = chartGatewaySecretNames(releaseName, namespace);
-  const taken = new Map([
-    ...chartSecretNames.map((name) => [name, `${name} holds other credentials`]),
+  const holders = new Map([
+    ...Object.entries(chartSecrets).map(([role, name]) => [
+      name,
+      `${name} is also the chart's ${role} Secret`,
+    ]),
     [generated.tls, `the chart generates ${generated.tls} for the Gateway TLS certificate`],
     [generated.root, `the chart generates ${generated.root} for the Gateway root CA`],
   ]);
-  const claim = (field, name) => {
-    if (name === undefined) {
-      return;
+  const repository = values.repositoryCredentials;
+  const fields = [
+    ...(values.backend?.chatgpt?.enabled
+      ? [["codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName]]
+      : []),
+    ["controlPlane.databaseCa.secretName", values.database.caSecretName],
+    ["controlPlane.gatewayApiKeySecretName", values.gatewayRouting.apiKeySecretName],
+    ...Object.entries(signInSecretDefaults)
+      .filter(([name]) => values.auth[name] !== undefined)
+      .map(([name, fallback]) => [
+        `controlPlane.${name}.secretName`,
+        values.auth[name].secretName ?? fallback,
+      ]),
+    ...(repository.enabled
+      ? ["serviceConfigSecretName", "appKeySecretName", "tlsSecretName", "publicCaSecretName"].map(
+          (key) => [`repository.${key}`, repository[key]],
+        )
+      : []),
+  ];
+  for (const [field, name] of fields) {
+    if (!name) {
+      continue;
     }
-    const holder = taken.get(name);
-    if (holder !== undefined) {
+    const holder = holders.get(name);
+    if (holder === undefined) {
+      holders.set(name, `${name} is also ${field}`);
+    } else {
       diagnostics.errors.push(`${field} must name a dedicated Secret; ${holder}.`);
-      return;
-    }
-    taken.set(name, `${name} is also ${field}`);
-  };
-  // validateGatewayApiKeySecret reports this name's own collisions.
-  const gatewayKey = values.gatewayRouting.apiKeySecretName;
-  if (gatewayKey !== undefined && !taken.has(gatewayKey)) {
-    taken.set(gatewayKey, `${gatewayKey} is also controlPlane.gatewayApiKeySecretName`);
-  }
-  if (values.backend?.chatgpt?.enabled) {
-    claim("codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName);
-  }
-  if (values.repositoryCredentials.enabled) {
-    for (const key of [
-      "serviceConfigSecretName",
-      "appKeySecretName",
-      "tlsSecretName",
-      "publicCaSecretName",
-    ]) {
-      claim(`repository.${key}`, values.repositoryCredentials[key]);
     }
   }
 }
@@ -1926,9 +1865,7 @@ function buildRendered(profile, parsed, diagnostics) {
     };
   }
 
-  validateGatewayApiKeySecret(values, releaseName, namespace, diagnostics);
-  signInSecretsDedicated(values, releaseName, namespace, diagnostics);
-  credentialSecretsDedicated(values, releaseName, namespace, diagnostics);
+  dedicatedSecrets(values, releaseName, namespace, diagnostics);
   collectorSecretsDedicated(values, diagnostics);
   validateDatabaseCaMount(values, diagnostics);
 
