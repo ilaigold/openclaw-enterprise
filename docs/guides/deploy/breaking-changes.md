@@ -11,7 +11,7 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
-## 2026-10-10: Sign-in and execution kubeconfig Secrets must be dedicated
+## 2026-10-10: Sign-in and kubeconfig Secrets must be dedicated; profile Collectors need an exporter
 
 **What breaks.** Helm refuses a sign-in `secretName` equal to a Gateway TLS or
 CA Secret, and an `executionCluster` kubeconfig Secret equal to the ChatGPT
