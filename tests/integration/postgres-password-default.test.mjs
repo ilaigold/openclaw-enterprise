@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRequire } from "node:module";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
@@ -15,9 +14,6 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-
-const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const { hashPassword } = await import(require.resolve("better-auth/crypto"));
 
 const adminEmail = "password-default-admin@example.test";
 const memberEmail = "password-default-member@example.test";
@@ -296,15 +292,12 @@ test(
           method: "POST",
           url: "/api/auth/accounts",
           headers,
-          payload: { email: storedEmail, password: memberPassword },
+          payload: { email: "supported-legacy-default@example.test", password: legacyPassword },
         });
         assert.equal(created.statusCode, 201, created.body);
         const userId = created.json().data.id;
         await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, userId]);
-        await pool.query(
-          "UPDATE occ.account SET password = $1 WHERE user_id = $2 AND provider_id = 'credential'",
-          [await hashPassword(legacyPassword), userId],
-        );
+
         const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
         assert.equal(stored.rows[0].email, storedEmail);
         // Better Auth's existing password-only validator rejects this stored spelling.
@@ -325,14 +318,11 @@ test(
           method: "POST",
           url: "/api/auth/accounts",
           headers,
-          payload: { email: ordinaryEmail, password: memberPassword },
+          payload: { email: ordinaryEmail, password: legacyPassword },
         });
         assert.equal(ordinary.statusCode, 201, ordinary.body);
         const ordinaryId = ordinary.json().data.id;
-        await pool.query(
-          "UPDATE occ.account SET password = $1 WHERE user_id = $2 AND provider_id = 'credential'",
-          [await hashPassword(legacyPassword), ordinaryId],
-        );
+
         const accepted = await signIn(ordinaryEmail, legacyPassword);
         assert.equal(accepted.statusCode, 200, accepted.body);
         const cookie = cookieHeaderFromSetCookie(accepted.headers["set-cookie"]);

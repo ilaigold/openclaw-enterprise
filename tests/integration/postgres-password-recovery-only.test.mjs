@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRequire } from "node:module";
 import {
   assertConsoleSignIn,
   assertProviderAttached,
@@ -24,9 +23,6 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-
-const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const { hashPassword } = await import(require.resolve("better-auth/crypto"));
 
 const adminEmail = "recovery-only-admin@example.test";
 const password = "recovery-only-member-password";
@@ -64,7 +60,7 @@ test(
     const google = fakeGoogle(t, { clientId: googleClientId, clientSecret: googleClientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install.
-    const { admin, accounts } = await onboardPasswordAccounts(t, {
+    const { admin, roles, accounts } = await onboardPasswordAccounts(t, {
       databaseUrl,
       state,
       pool,
@@ -265,28 +261,49 @@ test(
     await t.test(
       "guarded and recovery-only expose unsupported stored email and preserve password and denial behavior",
       async () => {
-        await app.close();
-        app = undefined;
         const legacyEmail = "legacy-recovery-\ud800@example.test";
         const storedEmail = "legacy-recovery-\ufffd@example.test";
+        const supportedEmail = "supported-legacy-recovery@example.test";
         const legacyPassword = "legacy-password-\u0000-\ud800-\ufffd";
-        // Seed the historical text encoding through PostgreSQL, keeping the existing
-        // recovery identity and method. Authentication and audit remain production code.
-        await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, admin.id]);
-        await pool.query(
-          "UPDATE occ.account SET password = $1 WHERE user_id = $2 AND provider_id = 'credential'",
-          [await hashPassword(legacyPassword), admin.id],
-        );
-        const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [admin.id]);
+        const headers = await signedInHeaders(app, origin, admin, address());
+        const created = await app.inject({
+          method: "POST",
+          url: "/api/auth/accounts",
+          headers,
+          payload: { email: supportedEmail, password: legacyPassword, roleId: roles.admin.id },
+        });
+        assert.equal(created.statusCode, 201, created.body);
+        const userId = created.json().data.id;
+        const target = await readAccount(app, headers, userId);
+        const recovery = await app.inject({ url: "/api/auth/recovery", headers });
+        assert.equal(recovery.statusCode, 200, recovery.body);
+        const replaced = await app.inject({
+          method: "POST",
+          url: "/api/auth/recovery",
+          headers,
+          payload: {
+            userId,
+            expectedCurrentUserId: recovery.json().data.userId,
+            expectedVersion: target.version,
+          },
+        });
+        assert.equal(replaced.statusCode, 200, replaced.body);
+        await app.close();
+        app = undefined;
+        // Seed the historical text encoding through PostgreSQL, keeping the API-created
+        // recovery identity and password method. Authentication and audit remain production code.
+        await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, userId]);
+
+        const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
         assert.equal(stored.rows[0].email, storedEmail);
         for (const settings of [
-          githubUpgradeSettings(admin.id),
-          recoveryOnly(githubUpgradeSettings(admin.id)),
+          githubUpgradeSettings(userId),
+          recoveryOnly(githubUpgradeSettings(userId)),
         ]) {
           app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
           const sessionsBefore = await pool.query(
             "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
-            [admin.id],
+            [userId],
           );
           const accepted = await passwordSignIn(
             app,
@@ -299,7 +316,7 @@ test(
           assert.ok(cookie, "the guarded credential endpoint issued a session cookie");
           const sessionsAfter = await pool.query(
             "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
-            [admin.id],
+            [userId],
           );
           assert.equal(sessionsAfter.rows[0].count, sessionsBefore.rows[0].count + 1);
           // Credential admission is not usable Console access: the existing session
@@ -330,24 +347,21 @@ test(
           // This direct SQL change is fixture preparation, not a supported account
           // repair operation. Prove the identical password on a supported address.
           await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [
-            adminEmail,
-            admin.id,
+            supportedEmail,
+            userId,
           ]);
           app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
           const ordinary = await passwordSignIn(
             app,
             origin,
-            { email: adminEmail, password: legacyPassword },
+            { email: supportedEmail, password: legacyPassword },
             address(),
           );
           assert.equal(ordinary.statusCode, 200, ordinary.body);
-          await assertSessionUser(app, ordinary, admin.id);
+          await assertSessionUser(app, ordinary, userId);
           await app.close();
           app = undefined;
-          await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [
-            storedEmail,
-            admin.id,
-          ]);
+          await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [storedEmail, userId]);
         }
       },
     );

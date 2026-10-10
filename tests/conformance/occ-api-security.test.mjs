@@ -8,7 +8,7 @@ import {
   createRuntimeLogCursorCodec,
   RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
@@ -861,6 +861,57 @@ test("authentication routes refuse NUL characters and unpaired surrogates", asyn
     });
   }
   assert.equal(fixture.auditSink.events.length, before);
+});
+
+test("account creation preserves hashed passwords through HTTP sign-in and session inspection", async (t) => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const app = fixture.createApp(fixture.administrator, {}, (options) =>
+    createFastifyApp({
+      ...options,
+      // In-memory persistence only; admission, IAM, account preparation, hashing and
+      // session handling are the real owners. Hosted PostgreSQL proves the transaction.
+      provisionAuthAccount: async (seed, event, prepared) => {
+        await fixture.auth.writePreparedAccount(prepared);
+        fixture.state.identities.push(seed.principal);
+        await fixture.auditSink.append(event);
+      },
+    }),
+  );
+  t.after(() => app.close());
+  const headers = authenticatedHeaders(fixture.app.defaultSession);
+  const email = "http-password-compatible@example.test";
+  const password = "account-password-\u0000-\ud800-\ufffd";
+  const create = (body, suppliedHeaders = headers) =>
+    app.inject({
+      method: "POST",
+      url: "/api/auth/accounts",
+      headers: suppliedHeaders,
+      payload: body,
+    });
+  assert.equal((await create({ email, password }, { origin: "http://127.0.0.1" })).statusCode, 401);
+  assert.equal(
+    (await create({ email, password }, { ...headers, origin: "https://foreign.example" }))
+      .statusCode,
+    403,
+  );
+  for (const invalidPassword of [123, "short"]) {
+    assert.equal((await create({ email, password: invalidPassword })).statusCode, 400);
+  }
+  const created = await create({ email, password });
+  assert.equal(created.statusCode, 201, created.body);
+  const signedIn = await app.inject({
+    method: "POST",
+    url: "/api/auth/sign-in/email",
+    headers: { origin: "http://127.0.0.1" },
+    payload: { email, password },
+  });
+  assert.equal(signedIn.statusCode, 200, signedIn.body);
+  const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
+  assert.ok(cookie);
+  const session = await app.inject({ url: "/api/auth/session", headers: { cookie } });
+  assert.equal(session.statusCode, 200, session.body);
+  assert.equal(session.json().data.user.id, created.json().data.id);
 });
 
 test("router failures answer the error envelope without echoing the path", async () => {

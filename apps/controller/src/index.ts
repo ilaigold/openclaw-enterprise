@@ -2594,10 +2594,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       415: { description: "Unsupported Media Type", ...error },
     };
     // Refuse request text that cannot be stored unchanged, as on OCC API routes.
-    const refuseUnstorableText = (request: FastifyRequest) => {
+    const refuseUnstorableText = (request: FastifyRequest, body: unknown = request.body) => {
       const unstorable =
-        unstorableTextFailure("params", request.params) ??
-        unstorableTextFailure("body", request.body);
+        unstorableTextFailure("params", request.params) ?? unstorableTextFailure("body", body);
       if (unstorable !== undefined) {
         throw unstorable;
       }
@@ -3706,7 +3705,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         },
         onRequest: async (request) => admit(request, createAuthAccountOperation),
         preValidation: async (request) => {
-          refuseUnstorableText(request);
+          // Passwords are hashed before persistence; their existing schema and hashing
+          // rules remain authoritative. Validate every other submitted field unchanged.
+          const body = request.body;
+          refuseUnstorableText(
+            request,
+            typeof body === "object" && body !== null && !Array.isArray(body)
+              ? { ...body, password: undefined }
+              : body,
+          );
           await resolveIdentity(request, createAuthAccountOperation);
         },
       },
