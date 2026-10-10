@@ -560,7 +560,10 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     version: "1.0.0",
     mode: "dedicated",
   });
-  assert.equal(codex.plugins.entries.codex.config.appServer.sandbox, "danger-full-access");
+  assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
+    sandbox: "danger-full-access",
+    approvalsReviewer: "user",
+  });
   assert.throws(
     () =>
       driver.configureAgent(configuration, {
@@ -570,6 +573,47 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
       }),
     /supports only dedicated Harness revisions/,
   );
+});
+
+test("OpenShell keeps dedicated Codex turns out of Codex's own sandbox (finding 1026)", () => {
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(workspaceGatewayClient()),
+  });
+  const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  // The documented OpenShell Configuration's guardian app-server, plus a member's model-backed
+  // reviewer. On a model the Gateway cannot verify for review, both make the pinned Gateway
+  // force a user reviewer, and with it a workspace-write turn sandbox that bwrap cannot start
+  // inside OpenShell. The explicit user reviewer keeps the frozen danger-full-access.
+  for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
+    const appServer = {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "read-only",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      ...(approvalsReviewer === undefined ? {} : { approvalsReviewer }),
+    };
+    const configuration = {
+      plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+    };
+    const configured = driver.configureAgent(configuration, harness);
+    assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "danger-full-access",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      approvalsReviewer: "user",
+    });
+    assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
+    assert.equal(appServer.sandbox, "read-only");
+    // Status reads rerun the hook on stored work, so the pin must be idempotent.
+    assert.deepEqual(driver.configureAgent(configured, harness), configured);
+  }
 });
 
 test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
