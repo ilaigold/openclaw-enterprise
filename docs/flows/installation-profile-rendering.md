@@ -124,14 +124,11 @@ written.
 and client-secret Secret keys for GitHub, Google and OIDC. It considers the chart's
 `client-id` and `client-secret` defaults when only one key is overridden, so those
 collisions also fail before deployment files are written.
-`signInSecretsDedicated` applies the chart's dedicated-Secret rule: each enabled
-provider's Secret, default or explicit, must differ from the installation,
-database and auth Secrets, the gateway API key Secret, the ChatGPT Secret and
-repository broker Secrets when enabled, and every provider checked before it.
-`validateGatewayApiKeySecret` applies the rule in the other direction: the
-gateway API key Secret must differ from `occ-installation-startup`,
-`occ-database`, and `occ-auth`, and from the chart's generated Gateway TLS and
-root CA Secrets (`chartGatewaySecretNames`). A collision writes a failed
+`dedicatedSecrets` applies the chart's dedicated-Secret rule in the chart's
+order: the ChatGPT admin, database CA, gateway API key, sign-in (default or
+explicit) and repository Secrets must each differ from `occ-installation-startup`,
+`occ-database`, `occ-auth`, the generated Gateway TLS and root CA Secrets
+(`chartGatewaySecretNames`) and every Secret listed before it. A collision writes a failed
 preflight report without `values.yaml` or `installation.yaml`.
 
 `scripts/render-installation-profile.mjs:nodeSelector` checks
@@ -286,6 +283,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10: One `dedicatedSecrets` rule replaces the sign-in, gateway API key and credential Secret checks and adds the database CA Secret.
 
 - 2026-10-10: Refuse gateway API key Secret names that Kubernetes refuses.
 

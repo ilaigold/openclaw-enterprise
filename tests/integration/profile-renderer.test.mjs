@@ -224,14 +224,16 @@ function assertPreflightFailure(profile, input, expected) {
   assert.match(preflight.errors.join("\n"), expected);
 }
 
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
+
 // Sets `field`, a dotted path into a copy of `input`, to each value in turn and expects
 // assertPreflightFailure to pass. A string message is the refusal text after the field name.
 // A failure names the field and the value.
 function assertFieldRefusals(profile, input, field, values, message) {
   const expected =
-    typeof message === "string"
-      ? new RegExp(`${field} ${message}`.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"))
-      : message;
+    typeof message === "string" ? new RegExp(escapeRegExp(`${field} ${message}`)) : message;
   const keys = field.split(".");
   for (const value of values) {
     const changed = structuredClone(input);
@@ -563,7 +565,7 @@ test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () 
   const error = renderError(() => helmTemplate(repositoryOutput, [collision]));
   assert.match(
     `${error.stdout ?? ""}${error.stderr ?? ""}`,
-    /repositoryCredentials\.serviceConfigSecretName must use a dedicated Secret distinct from chatgpt/,
+    /repositoryCredentials\.serviceConfigSecretName must name a dedicated Secret; occ-chatgpt-admin is also backend\.chatgpt\.secretName/,
   );
 });
 
@@ -580,12 +582,12 @@ function generatedGatewaySecrets(releaseName, namespace = "openclaw-system") {
     {
       name: `${gatewayName}-tls`.slice(0, 63).replace(/-$/, ""),
       role: "Gateway TLS certificate",
-      helm: /gatewayRouting\.apiKeySecretName must differ from the Gateway TLS Secret/,
+      helm: /gatewayRouting\.apiKeySecretName must name a dedicated Secret; \S+ is also gatewayRouting\.tlsSecretName/,
     },
     {
       name: `occ-gateway-${routeLabel}-root`,
       role: "Gateway root CA",
-      helm: /generated gatewayRouting root CA Secret must differ from leaf TLS, API key/,
+      helm: /gatewayRouting\.apiKeySecretName must name a dedicated Secret; \S+ is also the generated Gateway root CA/,
     },
   ];
 }
@@ -661,10 +663,12 @@ test(
       "occ-repository-tls",
       "occ-repository-public-ca",
     ]) {
+      // The ChatGPT admin Secret comes before sign-in and the repository Secrets after it, in
+      // the chart's order, so either setting can be the one refused.
       assertPreflightFailure(
         "codex",
         withGitHubSignIn(input, { secretName }),
-        /controlPlane\.github\.secretName must name a dedicated Secret/,
+        /controlPlane\.github\.secretName must name a dedicated Secret|must name a dedicated Secret; \S+ is also controlPlane\.github\.secretName\./,
       );
       // The same name placed over the accepted values makes the chart refuse it too.
       const override = join(accepted.directory, `github-${secretName}.json`);
@@ -672,7 +676,7 @@ test(
       const error = renderError(() => helmTemplate(accepted, [override]));
       assert.match(
         `${error.stdout ?? ""}${error.stderr ?? ""}`,
-        /auth\.github credentials must use a (dedicated Secret|Secret distinct from repositoryCredentials)/,
+        /auth\.github\.secretName must name a dedicated Secret|must name a dedicated Secret; \S+ is also auth\.github\.secretName/,
       );
     }
     // Without managed ChatGPT accounts the chart does not reserve that Secret name.
@@ -696,45 +700,51 @@ test(
     const [tls, root] = generatedGatewaySecrets("oce").map(({ name }) => name);
     // [input field, name, chart values, chart refusal, preflight refusal]: the cases bughunt probe R2 found
     // that only Helm refused, and the admin Secret shared with the gateway API key, which
-    // neither refused (finding 1044).
+    // neither refused (finding 1044). Both name the gateway API key, which comes second.
     for (const [field, name, chartValues, refusal, preflight = "must name a dedicated Secret"] of [
       [
         "codex.managedServiceAccounts.adminSecretName",
         "occ-private-gateway-key",
         { backend: { chatgpt: { secretName: "occ-private-gateway-key" } } },
-        /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/,
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-private-gateway-key is also backend\.chatgpt\.secretName/,
+        /controlPlane\.gatewayApiKeySecretName must name a dedicated Secret; occ-private-gateway-key is also codex\.managedServiceAccounts\.adminSecretName\./,
       ],
       [
         "controlPlane.gatewayApiKeySecretName",
         "occ-chatgpt-admin",
         { gatewayRouting: { apiKeySecretName: "occ-chatgpt-admin" } },
-        /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/,
-        // Preflight names the ChatGPT admin Secret, which it checks second.
-        /codex\.managedServiceAccounts\.adminSecretName must name a dedicated Secret; occ-chatgpt-admin is also controlPlane\.gatewayApiKeySecretName\./,
+        /gatewayRouting\.apiKeySecretName must name a dedicated Secret; occ-chatgpt-admin is also backend\.chatgpt\.secretName/,
+        /controlPlane\.gatewayApiKeySecretName must name a dedicated Secret; occ-chatgpt-admin is also codex\.managedServiceAccounts\.adminSecretName\./,
       ],
       ...[
-        [tls, /gatewayRouting\.tlsSecretName must differ from the ChatGPT Backend Secret/],
-        [root, /generated gatewayRouting root CA Secret must differ from the ChatGPT Backend/],
-        ["occ-database", /backend\.chatgpt admin credentials must use a dedicated Secret/],
-      ].map(([secretName, refusal]) => [
+        [tls, "gatewayRouting.tlsSecretName"],
+        [root, "the generated Gateway root CA"],
+        ["occ-database", "database.secretName"],
+      ].map(([secretName, other]) => [
         "codex.managedServiceAccounts.adminSecretName",
         secretName,
         { backend: { chatgpt: { secretName } } },
-        refusal,
+        new RegExp(
+          escapeRegExp(
+            `backend.chatgpt.secretName must name a dedicated Secret; ${secretName} is also ${other}`,
+          ),
+        ),
       ]),
       ...[
-        ["appKeySecretName", tls, "gatewayTls"],
-        ["appKeySecretName", root, "gatewayRoot"],
-        ["appKeySecretName", "occ-database", "database"],
-        ["appKeySecretName", "occ-private-gateway-key", "gatewayApiKey"],
-        ["tlsSecretName", "occ-chatgpt-admin", "chatgpt"],
-        ["tlsSecretName", "occ-repository-app-key", "appKeySecretName"],
+        ["appKeySecretName", tls, "gatewayRouting.tlsSecretName"],
+        ["appKeySecretName", root, "the generated Gateway root CA"],
+        ["appKeySecretName", "occ-database", "database.secretName"],
+        ["appKeySecretName", "occ-private-gateway-key", "gatewayRouting.apiKeySecretName"],
+        ["tlsSecretName", "occ-chatgpt-admin", "backend.chatgpt.secretName"],
+        ["tlsSecretName", "occ-repository-app-key", "repositoryCredentials.appKeySecretName"],
       ].map(([key, secretName, other]) => [
         `repository.${key}`,
         secretName,
         { repositoryCredentials: { [key]: secretName } },
         new RegExp(
-          `repositoryCredentials\\.${key} must use a dedicated Secret distinct from ${other}`,
+          escapeRegExp(
+            `repositoryCredentials.${key} must name a dedicated Secret; ${secretName} is also ${other}`,
+          ),
         ),
       ]),
     ]) {
@@ -851,9 +861,12 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     profile: "codex",
     input: () => managedCodexInput({ repository: repositoryConfiguration() }),
     cases: [
+      // The gateway API key comes after the ChatGPT admin Secret, so preflight names it instead.
       [
         "codex.managedServiceAccounts.adminSecretName",
-        credentialSecretNames.filter((name) => name !== "occ-chatgpt-admin"),
+        credentialSecretNames.filter(
+          (name) => name !== "occ-chatgpt-admin" && name !== "occ-private-gateway-key",
+        ),
         "must name a dedicated Secret",
       ],
       // Each repository Secret is checked against the ChatGPT admin Secret and the repository

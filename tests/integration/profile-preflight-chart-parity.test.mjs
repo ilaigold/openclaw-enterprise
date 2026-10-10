@@ -646,7 +646,7 @@ test(
         controlPlane: providers,
         values: { auth },
         accepted,
-        chartError: /auth\.(github|google|oidc) credentials must use a dedicated Secret/,
+        chartError: /auth\.(github|google|oidc)\.secretName must name a dedicated Secret/,
       });
     }
   },
@@ -929,20 +929,36 @@ test(
 );
 
 test(
-  "a database CA Secret shared with the gateway API key gets the same verdict",
+  "database CA Secret names get the same dedicated-Secret verdict from preflight and the chart",
   { skip: helmSkip },
   () => {
-    // Envoy Gateway would accept the CA certificate entry as a client API key.
-    for (const [secretName, accepted] of [
-      ["occ-db-ca", true],
-      ["occ-private-gateway-key", false],
+    // Envoy Gateway would accept the CA certificate entry as a client API key (finding 1044),
+    // and the database CA Secret is as dedicated as the others (finding 1048).
+    for (const [secretName, refusal] of [
+      ["occ-db-ca", undefined],
+      [
+        "occ-private-gateway-key",
+        "gatewayRouting.apiKeySecretName must name a dedicated Secret; occ-private-gateway-key is also database.caSecretName",
+      ],
+      [
+        "occ-github-login",
+        "auth.github.secretName must name a dedicated Secret; occ-github-login is also database.caSecretName",
+      ],
+      [
+        "occ-database",
+        "database.caSecretName must name a dedicated Secret; occ-database is also database.secretName",
+      ],
+      [
+        "oce-agent-gateways-tls",
+        "database.caSecretName must name a dedicated Secret; oce-agent-gateways-tls is also gatewayRouting.tlsSecretName",
+      ],
     ]) {
       assertParity({
         label: secretName,
         controlPlane: { databaseCa: { secretName } },
         values: { database: { caSecretName: secretName } },
-        accepted,
-        chartError: /gatewayRouting\.apiKeySecretName must differ from the database CA Secret/,
+        accepted: refusal === undefined,
+        chartError: new RegExp(refusal?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "^$"),
       });
     }
   },
