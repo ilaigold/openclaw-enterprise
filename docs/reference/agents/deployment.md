@@ -203,9 +203,9 @@ retries the stop of an earlier refusal even if that refusal has since lifted. Th
 deadline or attempt limit, since the refused version could still serve. Each
 failed stop doubles the recheck, from the cadence above to 5 minutes, and waits
 at least four times the stop's duration, so other Agents' deployments keep
-running; every try moves `lastAttempt.at`. If the refusal lifts, for example when
+running; every try moves `lastAttempt.at`. If an authorization or backend refusal lifts, for example when
 `deploy` is granted again, the deployment continues within its convergence
-deadline. The worker log's `worker.completed` `cause` says why the stop fails.
+deadline; other refusals stand. The worker log's `worker.completed` `cause` says why the stop fails.
 
 ### Model check failure cause
 

@@ -163,6 +163,19 @@ const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
 // as long as that stop took, so a blocked stop holds at most a fifth of the worker and other
 // Agents' work runs between attempts (finding 1002).
 const REFUSED_CANDIDATE_STOP_RECHECK_MAX_MS = 300_000;
+// Refusals that authorizeRevision and resolveRevisionBackend decide again on every pass, before
+// a stored refusal's stop is retried; one that no longer stands lifts the stored refusal.
+const REDECIDED_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "ACTOR_REVOKED",
+  "AUTHORIZATION_DENIED",
+  "INVALID_AGENT_PRINCIPAL",
+  "HARNESS_AUTH_REQUIRED",
+  "INVALID_HARNESS_AUTH",
+  "INVALID_SECRET_BINDINGS",
+  "BACKEND_UNAVAILABLE",
+  "HARNESS_AUTH_SOURCE_CHANGED",
+  "SERVICE_ACCOUNT_BACKEND_MISMATCH",
+]);
 const REFUSED_CANDIDATE_STOP_DURATION_FACTOR = 4;
 
 // A repository cleanup that another pass cannot settle (an invalidated attempt or a cleanup
@@ -351,6 +364,8 @@ interface RevisionDispatchResult extends DispatchResult {
   readonly refusedStopMs?: number;
   /** That stop yielded to other Work; later rechecks do not count it as a failure. */
   readonly refusedStopYielded?: boolean;
+  /** This pass already ran the refused candidate's stop, so publishing does not run it again. */
+  readonly refusedCandidateStopped?: boolean;
   readonly data?: Readonly<Record<string, unknown>>;
   readonly resultData?: Readonly<Record<string, unknown>>;
   readonly revision?: Readonly<AgentRevision>;
@@ -852,6 +867,11 @@ export class ControllerWorker {
   private passOutcome: WorkOutcome = "error";
   /** The revision this pass asked Compute to prepare, if any. */
   private preparedThisPass: string | undefined;
+  /**
+   * The refusal this deployment pass's work still waits to publish: its latest evidence is a
+   * REFUSED_CANDIDATE_STOP_PENDING deferral, or a lost claim that kept its refusal.
+   */
+  private refusalWait: { readonly idempotencyKey: string; readonly refusal: string } | undefined;
   private readonly state: PostgresPlatformState;
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
@@ -1132,6 +1152,7 @@ export class ControllerWorker {
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
           this.preparedThisPass = undefined;
+          this.refusalWait = undefined;
           try {
             await this.process(claim);
           } catch (error) {
@@ -3213,6 +3234,7 @@ export class ControllerWorker {
         });
         return;
       }
+      await this.readRefusalWait(claim, agent, revision);
       if (namespace.status !== "ready") {
         await this.finalizeRevision(claim, { outcome: "permanent", code: "NAMESPACE_NOT_READY" });
         return;
@@ -3277,6 +3299,12 @@ export class ControllerWorker {
       if (backend !== undefined) {
         await this.finalizeRevision(claim, backend);
         return;
+      }
+      // Authorization and the backend are decided again above on every pass. Once a stored
+      // refusal of theirs no longer stands (for example `deploy` granted again), the deployment
+      // continues, as it did before the wait was stored.
+      if (this.refusalWait !== undefined && REDECIDED_REFUSAL_CODES.has(this.refusalWait.refusal)) {
+        this.refusalWait = undefined;
       }
       if (agent.desiredRuntimeState === "stopped") {
         if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
@@ -3350,6 +3378,31 @@ export class ControllerWorker {
           outcome: "success",
           code: "REVISION_SUPERSEDED",
           supersededBy: successor,
+        });
+        return;
+      }
+      if (this.refusalWait !== undefined) {
+        // The refusal is already decided and recorded: retry its stop before anything that could
+        // restart the candidate or fail first. Re-running the pass re-stopped predecessors and
+        // re-prepared the candidate when Compute had refused it, so on Kubernetes its fresh Pods
+        // kept a yielding stop from ever finishing (finding 1034), and an error before the refusal
+        // ended the work with the candidate running (finding 1033).
+        if (previous !== undefined && previous.revision >= revision.revision) {
+          // A newer revision activated beside this shared candidate; it retires the candidate. (An
+          // error before this point retries the stop and publishes the refusal instead.)
+          await this.finalizeRevision(claim, {
+            outcome: "success",
+            code: "REVISION_SUPERSEDED",
+            supersededBy: previous,
+          });
+          return;
+        }
+        const refusal = this.refusalWait.refusal;
+        await this.stopRefusedCandidate(claim, refusal);
+        await this.finalizeRevision(claim, {
+          outcome: "permanent",
+          code: refusal,
+          refusedCandidateStopped: true,
         });
         return;
       }
@@ -4100,6 +4153,16 @@ export class ControllerWorker {
     result: RevisionDispatchResult,
     failureLogFields?: Readonly<Record<string, string | number>>,
   ): Promise<void> {
+    if (
+      this.refusalWait?.idempotencyKey === claim.idempotencyKey &&
+      result.refusedCandidate === undefined &&
+      (result.outcome === "retry" || result.outcome === "pending")
+    ) {
+      // A pass that failed before retrying its stored refusal's stop retries that stop instead,
+      // keeping the refusal: neither the attempt budget nor the deadline may end the wait with
+      // the refused candidate running (finding 1033).
+      result = { outcome: "permanent", code: this.refusalWait.refusal };
+    }
     const runtimeFailure =
       result.outcome === "pending"
         ? safeRuntimeFailureEvidence(result.data?.runtimeFailure)
@@ -4162,7 +4225,12 @@ export class ControllerWorker {
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
     // ActivationFailedError also lands here, but no bundled Driver activates before commit, so
     // it only reaches a published (active) revision, which the stop skips.
-    if (resolved.outcome === "permanent" && heldFailureCode === undefined && !expired) {
+    if (
+      resolved.outcome === "permanent" &&
+      heldFailureCode === undefined &&
+      !expired &&
+      resolved.refusedCandidateStopped !== true
+    ) {
       await this.stopRefusedCandidate(claim, resolved.code);
     }
     const refusedStopRecheckMs =
@@ -4391,6 +4459,7 @@ export class ControllerWorker {
       // A refusal decided before the work's first preparation leaves Compute untouched.
       if (
         this.preparedThisPass !== revision.id &&
+        this.refusalWait?.idempotencyKey !== claim.idempotencyKey &&
         (await this.queue.findWorkAttempt(claim.idempotencyKey)) === undefined
       ) {
         return;
@@ -4449,6 +4518,30 @@ export class ControllerWorker {
       if (oldest !== undefined) {
         this.stoppedPredecessors.delete(oldest);
       }
+    }
+  }
+
+  /**
+   * Records the refusal this deployment pass waits to publish, if its work's latest evidence is a
+   * stop wait. An active revision has none: its refused stop never runs.
+   */
+  private async readRefusalWait(
+    claim: ClaimedWork,
+    agent: Readonly<Agent>,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    if (
+      claim.idempotencyKey !== `agent_revision:${revision.id}:reconcile` ||
+      agent.activeRevisionId === revision.id
+    ) {
+      return;
+    }
+    const latest = await this.queue.findWorkAttempt(claim.idempotencyKey);
+    if (
+      latest?.refusal !== undefined &&
+      (latest.code === "REFUSED_CANDIDATE_STOP_PENDING" || latest.code === "LEASE_EXPIRED")
+    ) {
+      this.refusalWait = { idempotencyKey: claim.idempotencyKey, refusal: latest.refusal };
     }
   }
 

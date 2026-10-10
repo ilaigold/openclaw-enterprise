@@ -306,9 +306,10 @@ An unfinished stop publishes nothing: the work defers as
 `REFUSED_CANDIDATE_STOP_PENDING` past the attempt budget, deadline, in-lease shutdowns and,
 once recorded, lost claims until the stop succeeds, after the readiness cadence, doubled per
 failed (not `stopYielded`) stop in evidence, up to 5 minutes
-but at least four times the stop's duration. Each deferral records evidence with the refusal
-(`repeatEvidence`) for deployment status and `worker.completed`'s `refusal`. A superseded
-pass first retries a stop its work waited on.
+but at least four times the stop's duration. Each deferral records the refusal as evidence
+(`repeatEvidence`) for deployment status and `worker.completed`. Later passes
+retry only that stop, and errors keep waiting, unless superseded or an authorization or
+backend refusal lifted.
 
 `ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
 Driver interval, including closing sessions and failed runtime retirement,
@@ -410,6 +411,6 @@ failed retry keeps the active runtime.
 
 ## Changelog
 
-- 2026-10-10 15:30: Delete a refused Harness first; only failed stops back off. (fix-1025)
+- 2026-10-10 16:40: Retry a stored refusal's stop first. (fix-1033-1034)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.
