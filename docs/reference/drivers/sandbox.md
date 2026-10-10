@@ -45,7 +45,10 @@ revision's Harness Sandbox, without contacting the Harness. It answers `running`
 `SANDBOX_STOPPED`, `SANDBOX_FAILED` (for example a deleted Pod) or `HARNESS_EXITED`.
 OCC adds it to the runtime description and diagnostics, and reports a missing or
 deleting Sandbox as lost only for the running Agent's active revision. Nothing
-recovers a lost Sandbox until the Agent is deployed again.
+recovers a lost Sandbox until the Agent is deployed again. The OpenShell Driver
+asks the gateway to restart an exited Harness (`restart_policy: ALWAYS`); the
+runtime reads `starting` meanwhile. Only Sandboxes created before that policy
+existed report `HARNESS_EXITED`.
 
 ### Containment facets
 
