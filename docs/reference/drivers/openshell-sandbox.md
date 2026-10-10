@@ -183,9 +183,8 @@ OpenShell credentials must not appear in startup YAML.
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
 under `/sandbox/`.
 
-For dedicated Codex, OpenShell's `configureAgent` hook contributes the effective
-configuration before OCC validates and freezes the revision, disabling the
-inner Codex app-server sandbox:
+For dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
+configuration before OCC validates and freezes the revision:
 
 ```json
 {
@@ -205,8 +204,10 @@ inner Codex app-server sandbox:
 }
 ```
 
-Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's
-outer boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
+Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's outer
+boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
+Revisions admitted before #2079 lack the reviewer; deploy those Agents again
+([notice](../../guides/deploy/breaking-changes.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
