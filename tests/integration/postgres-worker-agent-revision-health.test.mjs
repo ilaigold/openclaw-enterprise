@@ -1897,3 +1897,189 @@ test(
     );
   },
 );
+
+// Finding 1041: an error in a waiting pass's first reads (its resources, or the stored refusal
+// itself) was recorded as an ordinary retry. It spent an attempt, and its evidence hid the stored
+// refusal, so the next pass prepared the candidate again; at the attempt limit the work failed
+// DEPENDENCY_UNAVAILABLE with the candidate running and the refusal lost. The pass now reads the
+// stored refusal again and retries its stop. If that read fails too, the claim is left to lease
+// recovery, which keeps the refusal.
+test(
+  "a refused candidate's wait survives failures reading its stored refusal",
+  { ...requiresPostgres, timeout: 120_000 },
+  async (context) => {
+    // Two attempts: on main the second failed read ended the work.
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const events = [];
+    let failedStops = 0;
+    let stopping = false;
+    let readFailures = 0;
+    let injected = 0;
+    const queue = fixture.PostgresWorkQueue.prototype;
+    const findWorkAttempt = queue.findWorkAttempt;
+    queue.findWorkAttempt = function (...args) {
+      if (readFailures > 0 && new Error().stack.includes("readRefusalWait")) {
+        readFailures -= 1;
+        injected += 1;
+        return Promise.reject(new Error("canceling statement due to statement timeout"));
+      }
+      return findWorkAttempt.apply(this, args);
+    };
+    try {
+      const { replacement, driver } = await startRefusedCandidate(fixture, "refused-wait-read", {
+        refuse: "unsupported",
+        emit: (event) => events.push(event),
+        stopRevision: () => {
+          if (stopping) {
+            return undefined;
+          }
+          failedStops += 1;
+          return Promise.reject(new Error("Pods did not terminate before the deadline"));
+        },
+      });
+      await waitFor("two failed refused stops", async () => (failedStops >= 2 ? true : undefined));
+      // One failed read: the same pass reads the refusal again and retries the stop.
+      let before = failedStops;
+      readFailures = 1;
+      await waitFor(
+        "a failed read, then the stop retried",
+        async () => (injected >= 1 && failedStops >= before + 1 ? true : undefined),
+        30_000,
+      );
+      // Both reads fail: the pass leaves its claim, and lease recovery keeps the refusal.
+      readFailures = 2;
+      await waitFor(
+        "two failed reads in one pass",
+        async () => {
+          const ended = await fixture.workResult(replacement);
+          assert.equal(ended.rows[0].reason_code, null, "the wait ended");
+          const left = events.some(
+            ({ event, code, workId }) =>
+              event === "worker.error" &&
+              code === "WORKER_UNAVAILABLE" &&
+              workId === replacement.idempotencyKey,
+          );
+          return injected >= 3 && left ? true : undefined;
+        },
+        30_000,
+      );
+      const claimed = await fixture.observerPool.query(
+        "SELECT claim_token FROM occ.controller_work WHERE idempotency_key = $1 AND state = 'claimed'",
+        [replacement.idempotencyKey],
+      );
+      assert.equal(claimed.rowCount, 1, "the failed pass left its claim");
+      before = failedStops;
+      await fixture.expireClaim(replacement, claimed.rows[0].claim_token);
+      await waitFor(
+        "the recovered wait retries the stop",
+        async () => (failedStops >= before + 1 ? true : undefined),
+        30_000,
+      );
+      stopping = true;
+      await fixture.work(replacement, "failed_permanent", 30_000);
+      const result = await fixture.workResult(replacement);
+      assert.equal(result.rows[0].reason_code, "SANDBOX_HARNESS_UNSUPPORTED");
+      assert.equal(driver.count(replacement), 1, "the refused candidate was stopped");
+      assert.deepEqual([...driver.running], []);
+      assert.equal(driver.preparations(replacement), 2, "no wait prepared the candidate again");
+      const evidence = await fixture.observerPool.query(
+        `SELECT details->>'reasonCode' AS code, details->>'refusal' AS refusal
+           FROM occ.audit_events WHERE details->>'workId' = $1 ORDER BY occurred_at, id`,
+        [replacement.idempotencyKey],
+      );
+      const codes = evidence.rows.map(({ code, refusal }) => `${code}:${refusal ?? ""}`);
+      assert.ok(codes.includes("LEASE_EXPIRED:SANDBOX_HARNESS_UNSUPPORTED"), codes.join(" "));
+      assert.ok(!codes.some((code) => code.startsWith("DEPENDENCY_UNAVAILABLE")), codes.join(" "));
+    } finally {
+      queue.findWorkAttempt = findWorkAttempt;
+    }
+  },
+);
+
+// Finding 1042: an authorization or backend refusal that lifted after the convergence deadline
+// prepared its waiting candidate again, and the deadline then ended the work with that candidate
+// running beside the stopped predecessor the active pointer still named. Past the deadline the
+// lift now stops the candidate and publishes the deadline, waiting like a refusal if the stop
+// fails.
+test(
+  "an authorization refusal lifted past the deadline stops its candidate",
+  { ...requiresPostgres, timeout: 120_000 },
+  async (context) => {
+    const fixture = await setup(context);
+    const events = [];
+    let failedStops = 0;
+    let lifted = false;
+    let liftedAt = 0;
+    let failedAfterLift = 0;
+    let admitted = Infinity;
+    let preparations;
+    let scenario;
+    scenario = await startRefusedCandidate(fixture, "refused-lifts-late", {
+      refuse: "iam",
+      emit: (event) => events.push(event),
+      // On main the pass after the grant prepared it again, and it became ready too late.
+      candidateReady: () => lifted && Date.now() - liftedAt > 1_500,
+      stopRevision: () => {
+        if (lifted && failedAfterLift >= 2) {
+          return undefined;
+        }
+        failedStops += 1;
+        if (lifted) {
+          failedAfterLift += 1;
+        } else if (failedStops >= 2 && Date.now() - admitted > 3_000) {
+          // Granted during this pass's stop, after its denial: the next pass sees the grant.
+          lifted = true;
+          liftedAt = Date.now();
+          preparations = scenario.driver.preparations(scenario.replacement);
+        }
+        return Promise.reject(new Error("Kubernetes API temporarily unavailable"));
+      },
+      startOptions: {
+        convergenceTimeoutMs: 2_000,
+        transformDrivers: proxiedIAM(async (iam, request) => {
+          const decision = await iam.authorize(request);
+          const denied =
+            !lifted &&
+            request.action === "deploy" &&
+            scenario !== undefined &&
+            scenario.driver.preparations(scenario.replacement) > 0;
+          return denied ? { ...decision, allowed: false } : decision;
+        }),
+      },
+    });
+    const { owner, first, replacement, driver } = scenario;
+    admitted = Date.now();
+    await waitFor("the grant past the deadline", async () => (lifted ? true : undefined), 30_000);
+    await waitFor(
+      "a wait on the deadline",
+      async () =>
+        refusedStopWaits(events, replacement).some(
+          ({ refusal }) => refusal === "CONVERGENCE_DEADLINE_EXCEEDED",
+        )
+          ? true
+          : undefined,
+      30_000,
+    );
+    const waiting = await fixture.deploymentStatus(owner, replacement);
+    assert.equal(waiting.progress.lastAttempt.code, "REFUSED_CANDIDATE_STOP_PENDING");
+    assert.equal(
+      waiting.progress.lastAttempt.message,
+      "Deployment missed its convergence deadline; stopping the candidate before recording the failure. The controller will retry.",
+    );
+    await fixture.work(replacement, "failed_permanent", 60_000);
+    const result = await fixture.workResult(replacement);
+    assert.equal(result.rows[0].reason_code, "CONVERGENCE_DEADLINE_EXCEEDED");
+    assert.deepEqual(result.rows[0].result_data, { timeoutMs: 2_000 });
+    assert.equal(driver.preparations(replacement), preparations, "not prepared after the grant");
+    assert.equal(failedAfterLift, 2);
+    assert.equal(driver.count(replacement), 1, "the candidate was stopped");
+    assert.ok(!driver.running.has(replacement.id));
+    assert.ok(!driver.running.has(first.id), "the sweep had stopped the predecessor");
+    const active = await fixture.activePointer(owner);
+    assert.equal(active.rows[0].active_revision_id, first.id);
+    // The waits after the grant name the deadline they will publish.
+    const waits = refusedStopWaits(events, replacement).map(({ refusal }) => refusal);
+    const lateWaits = waits.slice(waits.indexOf("CONVERGENCE_DEADLINE_EXCEEDED"));
+    assert.deepEqual(lateWaits, ["CONVERGENCE_DEADLINE_EXCEEDED", "CONVERGENCE_DEADLINE_EXCEEDED"]);
+  },
+);

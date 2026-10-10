@@ -50,6 +50,7 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   SandboxRevisionUnsupportedError,
+  ScopeViolationError,
   TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
@@ -3216,6 +3217,8 @@ export class ControllerWorker {
     this.beginDeployPass(claim);
     let result: RevisionDispatchResult;
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
+    let refusalWaitRead = false;
+    let claimAgent: Readonly<Agent> | undefined;
     try {
       if (
         claim.agentId === undefined ||
@@ -3245,6 +3248,7 @@ export class ControllerWorker {
         return { namespace, agent, revision, previous };
       });
       const { namespace, agent, revision, previous } = resources;
+      claimAgent = agent;
       if (namespace === undefined || agent === undefined || revision === undefined) {
         await this.finalizeRevision(claim, {
           outcome: "permanent",
@@ -3252,7 +3256,8 @@ export class ControllerWorker {
         });
         return;
       }
-      await this.readRefusalWait(claim, agent, revision);
+      await this.readRefusalWait(claim, agent, revision.id);
+      refusalWaitRead = true;
       if (namespace.status !== "ready") {
         await this.finalizeRevision(claim, { outcome: "permanent", code: "NAMESPACE_NOT_READY" });
         return;
@@ -3320,9 +3325,15 @@ export class ControllerWorker {
       }
       // Authorization and the backend are decided again above on every pass. Once a stored
       // refusal of theirs no longer stands (for example `deploy` granted again), the deployment
-      // continues, as it did before the wait was stored.
+      // continues, as it did before the wait was stored. Past the convergence deadline it cannot
+      // converge any more: preparing the candidate again only restarted it, and the deadline then
+      // ended the work with it running beside a stopped predecessor (finding 1042). The wait
+      // instead stops it and publishes the deadline.
       if (this.refusalWait !== undefined && REDECIDED_REFUSAL_CODES.has(this.refusalWait.refusal)) {
-        this.refusalWait = undefined;
+        this.refusalWait =
+          Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs
+            ? { ...this.refusalWait, refusal: "CONVERGENCE_DEADLINE_EXCEEDED" }
+            : undefined;
       }
       if (agent.desiredRuntimeState === "stopped") {
         if (claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)) {
@@ -3418,8 +3429,7 @@ export class ControllerWorker {
         const refusal = this.refusalWait.refusal;
         await this.stopRefusedCandidate(claim, refusal);
         await this.finalizeRevision(claim, {
-          outcome: "permanent",
-          code: refusal,
+          ...this.storedRefusalResult(refusal),
           refusedCandidateStopped: true,
         });
         return;
@@ -3571,6 +3581,9 @@ export class ControllerWorker {
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
         throw error;
+      }
+      if (!refusalWaitRead && !(error instanceof RefusedCandidateStopError)) {
+        await this.rereadRefusalWait(claim, claimAgent, error);
       }
       if (error instanceof RefusedCandidateStopError) {
         ({ result, logFields: failureLogFields } = error.pending());
@@ -4179,7 +4192,7 @@ export class ControllerWorker {
       // A pass that failed before retrying its stored refusal's stop retries that stop instead,
       // keeping the refusal: neither the attempt budget nor the deadline may end the wait with
       // the refused candidate running (finding 1033).
-      result = { outcome: "permanent", code: this.refusalWait.refusal };
+      result = this.storedRefusalResult(this.refusalWait.refusal);
     }
     const runtimeFailure =
       result.outcome === "pending"
@@ -4546,11 +4559,11 @@ export class ControllerWorker {
   private async readRefusalWait(
     claim: ClaimedWork,
     agent: Readonly<Agent>,
-    revision: Readonly<AgentRevision>,
+    revisionId: string,
   ): Promise<void> {
     if (
-      claim.idempotencyKey !== `agent_revision:${revision.id}:reconcile` ||
-      agent.activeRevisionId === revision.id
+      claim.idempotencyKey !== `agent_revision:${revisionId}:reconcile` ||
+      agent.activeRevisionId === revisionId
     ) {
       return;
     }
@@ -4561,6 +4574,65 @@ export class ControllerWorker {
     ) {
       this.refusalWait = { idempotencyKey: claim.idempotencyKey, refusal: latest.refusal };
     }
+  }
+
+  /**
+   * After an error in the pass's first reads (its resources or `readRefusalWait`), reads the
+   * stored refusal again, so the pass retries the wait's stop like any later failure. Recorded as
+   * an ordinary retry instead, the error spent an attempt and its evidence ended the wait: the
+   * next pass prepared the candidate again, and at the attempt limit the work failed with the
+   * candidate running and the refusal lost (finding 1041). If this read fails too, the error
+   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. A
+   * ScopeViolationError (an invalid row) cannot recover by itself, so it stays a retry that the
+   * attempt limit ends instead of a wait repeated forever.
+   */
+  private async rereadRefusalWait(
+    claim: ClaimedWork,
+    agent: Readonly<Agent> | undefined,
+    error: unknown,
+  ): Promise<void> {
+    const { agentId, revisionId } = claim;
+    if (
+      agentId === undefined ||
+      revisionId === undefined ||
+      claim.idempotencyKey !== `agent_revision:${revisionId}:reconcile`
+    ) {
+      return;
+    }
+    try {
+      const current =
+        agent ??
+        (await this.state.read((view) => view.agents.findAgent(claim.namespaceId, agentId)));
+      if (current !== undefined) {
+        await this.readRefusalWait(claim, current, revisionId);
+      }
+    } catch (reread) {
+      if (reread instanceof WorkClaimLostError) {
+        throw reread;
+      }
+      if (reread instanceof ScopeViolationError || error instanceof ScopeViolationError) {
+        return;
+      }
+      // The run loop's own log names no work.
+      this.emit({
+        event: "worker.error",
+        code: "WORKER_UNAVAILABLE",
+        ...workLogFields(claim),
+        ...revisionFailureLogFields(error),
+      });
+      throw error;
+    }
+  }
+
+  /** The permanent result that publishes a stored refusal once its candidate is stopped. */
+  private storedRefusalResult(refusal: string): RevisionDispatchResult {
+    return refusal === "CONVERGENCE_DEADLINE_EXCEEDED"
+      ? {
+          outcome: "permanent",
+          code: refusal,
+          data: convergenceDeadlineResultData(this.convergenceTimeoutMs, undefined),
+        }
+      : { outcome: "permanent", code: refusal };
   }
 
   /**

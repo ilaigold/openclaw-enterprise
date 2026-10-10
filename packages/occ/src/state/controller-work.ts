@@ -82,11 +82,15 @@ export function deploymentProgressForWork(
       // The refusal is the code this deployment's `error` carries once the stop succeeds,
       // unless a newer revision supersedes it first.
       code = attempt.code;
-      message = `Deployment refused${
-        attempt.refusal !== undefined && FAILURE_CODE.test(attempt.refusal)
-          ? ` (${attempt.refusal})`
-          : ""
-      }; stopping the refused version before recording the failure. The controller will retry.`;
+      // A refusal that lifted after the convergence deadline waits to publish the deadline.
+      message =
+        attempt.refusal === "CONVERGENCE_DEADLINE_EXCEEDED"
+          ? "Deployment missed its convergence deadline; stopping the candidate before recording the failure. The controller will retry."
+          : `Deployment refused${
+              attempt.refusal !== undefined && FAILURE_CODE.test(attempt.refusal)
+                ? ` (${attempt.refusal})`
+                : ""
+            }; stopping the refused version before recording the failure. The controller will retry.`;
       break;
     case "AGENT_GATEWAY_UNAVAILABLE":
       code = attempt.code;
