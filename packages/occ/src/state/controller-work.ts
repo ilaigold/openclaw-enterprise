@@ -533,6 +533,32 @@ function deploymentErrorMessage(code: string): string {
       return "Deployment was superseded by a newer revision.";
     case "REVISION_STOPPED":
       return "Deployment ended because the Agent was stopped.";
+    case "REPOSITORY_REVISION_SUPERSEDED":
+      return "Deployment was superseded by a newer revision.";
+    case "REPOSITORY_REVISION_STOPPED":
+      return "Deployment ended because the Agent was stopped or its Namespace is no longer ready.";
+    // Refusals the worker decides again on every pass (finding 1039). The status never names
+    // the principal or the resource the decision was about.
+    case "AUTHORIZATION_DENIED":
+      return "The account that requested this deployment, or the Agent's own identity, no longer has a permission the revision needs: deploy on the Agent, read on its Configuration, or use of a Secret, credential source or ServiceAccount it binds. Ask an admin to grant the access, then deploy again.";
+    case "ACTOR_REVOKED":
+      return "The account that requested this deployment is no longer an active account in the Installation. Deploy again from an account with deploy access to the Agent.";
+    case "HARNESS_AUTH_REQUIRED":
+      return "This revision has no Harness authentication method. Set one on the Agent, then deploy again.";
+    case "BACKEND_UNAVAILABLE":
+      return "The Backend this revision was admitted with is no longer configured on the Installation. Ask an admin to restore it, or move the Agent to a configured Backend, then deploy again.";
+    case "HARNESS_AUTH_SOURCE_CHANGED":
+      return "The ServiceAccount this revision authenticates with is missing, has no access token, or its credential changed since admission. Bind an available ServiceAccount, or deploy again to admit a revision with its current credential.";
+    case "SECRET_BINDING_UNAVAILABLE":
+      return "A Secret this revision binds is missing or no longer belongs to the selected Secret Driver. Bind available Secrets, then deploy again.";
+    case "NAMESPACE_NOT_READY":
+      return "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.";
+    case "WORKSPACE_SETUP_UNSUPPORTED":
+      return "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.";
+    case "DEPENDENCY_UNAVAILABLE":
+      return "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.";
+    case "LEASE_EXPIRED":
+      return "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.";
     case "AGENT_GATEWAY_UNAVAILABLE":
       return "The Agent Gateway was still not reachable through its route at the deployment deadline.";
     case "AGENT_GATEWAY_UNAUTHORIZED":

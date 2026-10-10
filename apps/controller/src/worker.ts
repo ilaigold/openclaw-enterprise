@@ -1145,11 +1145,13 @@ export class ControllerWorker {
     while (!this.stopping) {
       // Every pass starts here, including back-to-back claims that skip the idle delay.
       this.progress();
+      let claimed: ClaimedWork | undefined;
       try {
         const recovery = await this.queue.recoverStale();
         await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
         const claim = await this.queue.claim();
         if (claim !== undefined) {
+          claimed = claim;
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
           this.preparedThisPass = undefined;
@@ -1185,10 +1187,20 @@ export class ControllerWorker {
         }
         await this.health(false);
       } catch (error) {
-        this.emit({
-          event: "worker.error",
-          code: error instanceof WorkClaimLostError ? "CLAIM_LOST" : "WORKER_UNAVAILABLE",
-        });
+        if (error instanceof WorkClaimLostError && this.stopping) {
+          // A graceful shutdown aborted the pass in flight. That is no failure: the work keeps
+          // its claim until the lease expires, then another worker resumes it (finding 1040).
+          this.emit({
+            event: "worker.pass-interrupted",
+            ...(claimed === undefined ? {} : workLogFields(claimed)),
+            cause: "WorkerStopping",
+          });
+        } else {
+          this.emit({
+            event: "worker.error",
+            code: error instanceof WorkClaimLostError ? "CLAIM_LOST" : "WORKER_UNAVAILABLE",
+          });
+        }
       }
       try {
         await delay(this.pollIntervalMs, undefined, { signal: this.abort.signal });
@@ -1480,6 +1492,12 @@ export class ControllerWorker {
       }
       return prepared;
     } catch (error) {
+      // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
+      // own claim-loss or interruption record explains it, so there is no Compute failure to
+      // describe (finding 1040).
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
       let diagnostic: ComputePrepareRevisionFailureDiagnostic | undefined;
       try {
         diagnostic = this.compute.describePrepareRevisionFailure?.(error);

@@ -225,9 +225,14 @@ Each provider needs its own Secret, as the chart requires: its `secretName`
 name another provider's Secret, `gatewayApiKeySecretName`, the ChatGPT admin
 Secret when `codex.managedServiceAccounts` is set, a repository Secret, or the
 chart's `occ-installation-startup`, `occ-database` and `occ-auth` Secrets.
-`gatewayApiKeySecretName` must also differ from those three chart Secrets and
-from the Gateway TLS (`<release>-agent-gateways-tls` for short release names)
-and root CA (`occ-gateway-<hash>-root`) Secrets the chart generates.
+`gatewayApiKeySecretName` must also differ from those three chart Secrets,
+`databaseCa.secretName`, and the Gateway TLS (`<release>-agent-gateways-tls` for
+short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
+generates. The ChatGPT admin Secret and each repository Secret must differ from
+the three chart Secrets, those two generated Secrets, `gatewayApiKeySecretName`
+and each other. With `controlPlane.loggingCollector.enabled`, no credential
+Secret may be named `occ-otel-collector-config` or
+`occ-otel-collector-exporter`.
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
 and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`

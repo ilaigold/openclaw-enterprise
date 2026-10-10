@@ -11,6 +11,28 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-10: The gateway API key Secret must hold only gateway keys
+
+**What breaks.** Helm refuses a `gatewayRouting.apiKeySecretName` equal to
+`backend.chatgpt.secretName`, `database.caSecretName` or
+`gatewayRouting.sandbox.tlsSecretName`. Envoy Gateway accepts every entry of
+the gateway API key Secret as a client key, so a shared Secret made the ChatGPT
+admin key, the CA certificate or the TLS key a valid `x-api-key` on the Agent
+Gateway listener.
+Such an Installation was never safe to run.
+
+**Who is affected.** Installations that name one Secret for the gateway API key
+and one of those. The defaults differ.
+
+**How to tell.** `helm upgrade` fails with
+`gatewayRouting.apiKeySecretName must differ from the ...`.
+
+**Steps.** Create a dedicated Secret with only the `occ` entry, copied from the
+shared Secret, point `gatewayRouting.apiKeySecretName` (profile:
+`controlPlane.gatewayApiKeySecretName`) at it, and upgrade. Then delete `occ`
+from the old Secret. If it held the ChatGPT admin key or a TLS key, rotate that
+key. _untested_
+
 ## 2026-10-10: OpenShell Codex Agents need a new deployment
 
 **What breaks.** A controller-only upgrade does not repair OpenShell dedicated
