@@ -1,5 +1,6 @@
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { nodeProgramArguments } from "../node-program.ts";
+import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
 // and 5s supervisor margin. Idle Gateways exit as soon as their work settles.
@@ -32,40 +33,12 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "node",
   "-e",
 ]);
+export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
+// Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
+export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
 
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 export const RUNTIME_READINESS_PATH = "/readyz";
-
-const STARTUP_PHASE_EVENT = "runtime.startup_phase";
-
-// One stderr JSON line per startup phase, for deploy-time measurement. Callers
-// pass fixed phase names only: never provider, model, credential or path values.
-// A failed phase may add a fixed upper-case cause code, which the Collector exports.
-// Date.now() keeps this usable in every wrapper, including stubbed test contexts.
-export function startupPhaseHelper(container: "gateway" | "agent"): string {
-  return String.raw`
-const startupPhaseOrigin = Date.now();
-function logStartupPhase(phase, startedAt, outcome = "ok", code) {
-  const now = Date.now();
-  const failed = outcome !== "ok";
-  console.error(JSON.stringify({
-    event: ${JSON.stringify(STARTUP_PHASE_EVENT)},
-    container: ${JSON.stringify(container)},
-    phase,
-    outcome: failed ? "failed" : "ok",
-    ms: now - startedAt,
-    sinceStartMs: now - startupPhaseOrigin,
-    ...(failed && typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? { code } : {}),
-  }));
-}
-async function timeStartupPhase(phase, run) {
-  const startedAt = Date.now();
-  const result = await run();
-  logStartupPhase(phase, startedAt);
-  return result;
-}
-`;
-}
 
 const PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER = String.raw`
 function derivePluginAppServerTokenFromBase(baseToken, revisionId, startupId) {
@@ -821,10 +794,19 @@ function writableOpenClawConfigPath() {
   return safeRuntimePath(requireNonEmptyString(process.env.HOME, "OpenClaw runtime home"), ".openclaw/openclaw.json");
 }
 
+let atomicOpenClawConfigWrites = false;
 function writeOpenClawConfig(config) {
   const target = writableOpenClawConfigPath();
   pluginMkdirSync(pluginDirname(target), { recursive: true });
-  pluginWriteFileSync(target, JSON.stringify(config), { mode: 0o600 });
+  if (atomicOpenClawConfigWrites) {
+    const temporary = target + ".oce-write.pending";
+    try {
+      pluginWriteFileSync(temporary, JSON.stringify(config), { mode: 0o600 });
+      require("node:fs").renameSync(temporary, target);
+    } finally { pluginRmSync(temporary, { force: true }); }
+  } else {
+    pluginWriteFileSync(target, JSON.stringify(config), { mode: 0o600 });
+  }
   process.env.OPENCLAW_CONFIG_PATH = target;
 }
 
@@ -1514,37 +1496,25 @@ function codexConfigPathSegment(segment) {
   return /^[A-Za-z0-9_-]+$/.test(segment) ? segment : JSON.stringify(segment);
 }
 
-function codexAppConfigEdits(configuration) {
-  const features = isPlainObject(configuration.features) ? configuration.features : {};
-  const apps = isPlainObject(configuration.apps) ? configuration.apps : {};
-  const edits = [
-    { keyPath: "features.apps", mergeStrategy: "replace", value: features.apps === true },
-    { keyPath: "features.plugins", mergeStrategy: "replace", value: features.plugins === true },
-    {
-      keyPath: "features.remote_plugin",
+function codexPluginConfigEdits(configuration) {
+  return [
+    ...["apps", "plugins", "remote_plugin"].map((feature) => ({
+      keyPath: "features." + feature,
       mergeStrategy: "replace",
-      value: features.remote_plugin === true,
-    },
-    {
-      keyPath: 'apps."_default"',
+      value: configuration.features?.[feature] === true,
+    })),
+    // Project the complete OCE-owned policy without retaining native table entries.
+    ...["apps", "plugins"].map((keyPath) => ({
+      keyPath,
       mergeStrategy: "replace",
-      value: isPlainObject(apps._default) ? apps._default : { enabled: false },
-    },
+      value: configuration[keyPath],
+    })),
   ];
-  for (const [appId, config] of Object.entries(apps)) {
-    if (appId === "_default") continue;
-    edits.push({
-      keyPath: "apps." + codexConfigPathSegment(appId),
-      mergeStrategy: "replace",
-      value: config,
-    });
-  }
-  return edits;
 }
 
-async function writeCodexAppConfiguration(configuration) {
-  const effective = await readCodexAppConfiguration();
-  const edits = codexAppConfigEdits(configuration);
+async function writeCodexPluginConfiguration(configuration) {
+  const effective = await readCodexPluginConfiguration();
+  const edits = codexPluginConfigEdits(configuration);
   // Replacing a user table does not erase descendants inherited from other
   // config layers. Materialize the selection and approval policy at those keys.
   // Native requirements still apply independently; readback below remains mandatory.
@@ -1588,7 +1558,7 @@ async function writeCodexAppConfiguration(configuration) {
   });
 }
 
-async function readCodexAppConfiguration() {
+async function readCodexPluginConfiguration() {
   // Match the dedicated Harness workspace; a thread-agnostic read omits its
   // trusted .codex layers and can validate a different policy than the Agent uses.
   const response = await codexAppServerRequest("config/read", {
@@ -1597,8 +1567,14 @@ async function readCodexAppConfiguration() {
   return response?.config;
 }
 
-function verifyCodexAppConfiguration(configuration, effective) {
+function verifyCodexPluginConfiguration(configuration, effective) {
   assertConfigContainsOverlay(effective, configuration);
+  for (const [id, policy] of Object.entries(effective.plugins ?? {})) {
+    // Only explicit enablement overrides the verified default-off policy.
+    if (id !== "_default" && !hasOwn(configuration.plugins, id) && policy?.enabled === true) {
+      throw new Error("Codex effective plugins configuration enables an unselected entry; remove the native override or update the Agent selection.");
+    }
+  }
   for (const [appId, actual] of Object.entries(effective.apps ?? {})) {
     const app = configuration.apps?.[appId];
     if (app === undefined) {
@@ -1775,12 +1751,22 @@ async function installCodexSelectionSet(selections, failures = []) {
   const enabledPluginIds = enabledCodexSelectionIds(selections);
   const listed = await codexAppServerRequest("plugin/list", {});
   const readParamsList = pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
-  if (readParamsList.length === 0) return { successfulPluginIds: [], failures: [] };
   const resolvedDetails = await readCodexPluginDetails(readParamsList);
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   const successfulPluginIds = [];
   const installs = pluginRuntimeTranslator.codexInstallPlan(selections, resolvedDetails);
+  // Native installation reports connector auth only for enabled plugins.
+  // Grant validated selections before installation; app grants still wait for revalidation.
+  await codexAppServerRequest("config/batchWrite", {
+    edits: [{ keyPath: "plugins", mergeStrategy: "replace", value: {
+      _default: { enabled: false },
+      ...Object.fromEntries(installs.map((plugin) => [plugin.nativeId, {
+        enabled: enabledPluginIds.has(plugin.pluginId) && !failedIds.has(plugin.pluginId),
+      }])),
+    } }],
+    reloadUserConfig: true,
+  });
   for (const readParams of readParamsList) {
     const selectedPlugin = installs.find(
       (candidate) => candidate.remotePluginId === readParams.pluginName,
@@ -1846,7 +1832,6 @@ async function installCodexSelectionSet(selections, failures = []) {
     ? await readCodexToolStatuses()
     : [];
   const effectiveResolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails, failed, toolStatuses);
-  await writeCodexAppConfiguration(effectiveResolvedArtifact.configuration);
   const installedDetails = await readCodexPluginDetails(readParamsList, (readParams, index) => {
     const selectedPlugin = installs.find(
       (candidate) => candidate.remotePluginId === readParams.pluginName,
@@ -1866,21 +1851,29 @@ async function installCodexSelectionSet(selections, failures = []) {
   if (JSON.stringify(installedArtifact.configuration) !== JSON.stringify(effectiveResolvedArtifact.configuration)) {
     throw new Error("Codex plugin installed app mapping does not match startup resolution.");
   }
+  // Remote plugin/read reports catalog metadata, not cached bundle contents.
+  // Recheck the admitted release and app mapping before granting apps.
+  await writeCodexPluginConfiguration(effectiveResolvedArtifact.configuration);
+  const enabledReadParams = readParamsList.filter((readParams) => installs.some(
+    (plugin) => plugin.remotePluginId === readParams.pluginName &&
+      !failedIds.has(plugin.pluginId) && enabledPluginIds.has(plugin.pluginId),
+  ));
+  const enabledDetails = await readCodexPluginDetails(enabledReadParams);
   for (const plugin of effectiveResolvedArtifact.installs) {
     if (failedIds.has(plugin.pluginId) || !enabledPluginIds.has(plugin.pluginId)) continue;
-    const readParams = readParamsList.find((candidate) => candidate.pluginName === plugin.remotePluginId);
+    const readParams = enabledReadParams.find((candidate) => candidate.pluginName === plugin.remotePluginId);
     if (readParams === undefined) {
       throw new Error("Codex plugin installed identity does not match the selected catalog entry.");
     }
-    const detail = installedDetails[readParamsList.indexOf(readParams)];
+    const detail = enabledDetails[enabledReadParams.indexOf(readParams)];
     verifyCodexPluginDetail(plugin, readParams, detail);
   }
   // TODO: use native effective app/tool policy introspection when available.
   // Codex 0.156 config/read omits managed app requirements applied at execution;
   // this readback verifies loaded configuration, not future thread policy.
-  const effectiveConfiguration = await readCodexAppConfiguration();
+  const effectiveConfiguration = await readCodexPluginConfiguration();
   await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
-  verifyCodexAppConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
+  verifyCodexPluginConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
   return { successfulPluginIds, failures: failed };
 }
 
@@ -1907,14 +1900,15 @@ async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = 
     const configuration = {
       features: { apps: false, plugins: false, remote_plugin: false },
       apps: { _default: { enabled: false } },
+      plugins: { _default: { enabled: false } },
     };
     // The app-server may still be starting: retry like the ChatGPT install path.
     const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
     let lastError = new Error("Codex plugin disable deadline expired before the first attempt.");
     while (Date.now() < deadline) {
       try {
-        await writeCodexAppConfiguration(configuration);
-        verifyCodexAppConfiguration(configuration, await readCodexAppConfiguration());
+        await writeCodexPluginConfiguration(configuration);
+        verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration());
         lastError = undefined;
         break;
       } catch (error) {
@@ -2192,6 +2186,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
+${gatewayStateMigrationHelper("restart the Pod")}
 
 function gatewayRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
@@ -2580,6 +2575,83 @@ const followsPeerStatus =
   pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime);
 // A respawn configures from the file a container restart would start from.
 const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+const writableInitialConfig = followsPeerStatus && initialConfigPath === writableOpenClawConfigPath();
+atomicOpenClawConfigWrites = writableInitialConfig;
+const codexBridgePath = ["plugins", "entries", "codex", "config", "codexPlugins"];
+const admittedConfigText = writableInitialConfig
+  ? pluginReadFileSync(${JSON.stringify(`${MANAGED_CONFIGURATION_DIRECTORY}/openclaw.json`)}, "utf8") : undefined;
+const originalCodexBridge = admittedConfigText === undefined
+  ? undefined : objectAtPath(JSON.parse(admittedConfigText), codexBridgePath);
+const codexBridgeStatePath = initialConfigPath + ".oce-peer-bridge.json";
+const codexBridgeOwner = writableInitialConfig ? {
+  version: 1,
+  revisionId: process.env.OPENCLAW_AGENT_REVISION_ID,
+  sourceHash: require("node:crypto").createHash("sha256").update(admittedConfigText).digest("hex"),
+} : undefined;
+let generatedCodexBridges = [];
+// Why the Pod-local record cannot be used, if it cannot. Every container
+// restart in this Pod reads the same file, so startup holds instead of exiting.
+let codexBridgeRecordProblem;
+if (writableInitialConfig && pluginExistsSync(codexBridgeStatePath)) {
+  let saved;
+  try {
+    saved = JSON.parse(pluginReadFileSync(codexBridgeStatePath, "utf8"));
+  } catch {
+    codexBridgeRecordProblem = "is unreadable";
+  }
+  if (codexBridgeRecordProblem === undefined && (!isPlainObject(saved) ||
+      Object.entries(codexBridgeOwner).some(([key, value]) => saved[key] !== value) ||
+      !Array.isArray(saved.bridges) || saved.bridges.length > 2 ||
+      !saved.bridges.every(isPlainObject))) {
+    codexBridgeRecordProblem = "does not match the admitted revision";
+  }
+  if (codexBridgeRecordProblem === undefined) generatedCodexBridges = saved.bridges;
+}
+
+// Rebuilding generated bridges without the record could overwrite native
+// edits, so the record is kept and only Pod replacement clears it.
+function holdCodexBridgeRecordFailure() {
+  console.error(
+    "Gateway peer configuration record " + codexBridgeStatePath + " " + codexBridgeRecordProblem +
+      ". OpenClaw was not started. Delete the Pod to restore the managed configuration snapshot;" +
+      " native configuration edits in this Pod are lost.",
+  );
+  logStartupPhase("peer-bridge-record", startupPhaseOrigin, "failed", "PEER_BRIDGE_RECORD_UNUSABLE");
+  publishRuntimeFailure("peer-bridge-record", "UNAVAILABLE");
+  forwardTermination(() => undefined);
+  setInterval(() => {}, 3600000);
+}
+
+function recordWritableCodexBridges(bridges) {
+  // Pending writes record both sides for crash replay; success keeps only the
+  // current bridge so a later edit back to an older result remains an edit.
+  const temporary = codexBridgeStatePath + ".pending";
+  try {
+    pluginWriteFileSync(temporary, JSON.stringify({ ...codexBridgeOwner, bridges }), { mode: 0o600 });
+    require("node:fs").renameSync(temporary, codexBridgeStatePath);
+  } finally { pluginRmSync(temporary, { force: true }); }
+  generatedCodexBridges = bridges;
+}
+
+function prepareWritableCodexBridge(failures) {
+  if (!writableInitialConfig) return;
+  const config = readOpenClawConfig();
+  const codexConfig = objectAtPath(config, codexBridgePath.slice(0, -1));
+  const previousBridge = codexConfig?.codexPlugins;
+  const generated = generatedCodexBridges.some((bridge) => pluginDeepEqual(bridge, previousBridge));
+  if (generated) {
+    if (originalCodexBridge === undefined) delete codexConfig.codexPlugins;
+    else codexConfig.codexPlugins = JSON.parse(JSON.stringify(originalCodexBridge));
+  }
+  const overlay = openClawPluginConfiguration(pluginRuntime, failures, config);
+  const nextBridge = overlay === undefined ? undefined
+    : objectAtPath(JSON.parse(JSON.stringify(overlay)), codexBridgePath);
+  const bridges = [generated ? previousBridge : undefined, nextBridge]
+    .filter((bridge, index, values) => isPlainObject(bridge) &&
+      values.findIndex((candidate) => pluginDeepEqual(candidate, bridge)) === index);
+  recordWritableCodexBridges(bridges);
+  if (generated) writeOpenClawConfig(config);
+}
 
 // Write the configuration the native Gateway starts with. It depends only on the
 // admitted configuration, the Harness peer status and the workspace node binding,
@@ -2589,6 +2661,7 @@ function configureGateway(peerStatus) {
   process.env.OPENCLAW_CONFIG_PATH = initialConfigPath;
   configureNativeWorkerProfile();
   const peerFailures = peerStatus?.failures ?? readPluginFailuresFromEnvironment();
+  prepareWritableCodexBridge(peerFailures);
   if (peerStatus !== undefined) {
     process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(peerStatus.startupId);
   }
@@ -2602,6 +2675,10 @@ function configureGateway(peerStatus) {
   }
   if (peerStatus !== undefined) {
     pluginResult.successfulPluginIds = peerStatus.successfulPluginIds;
+  }
+  if (writableInitialConfig) {
+    // Once application succeeds, an edit back to an older bridge is also an edit.
+    recordWritableCodexBridges([objectAtPath(readOpenClawConfig(), codexBridgePath)].filter(isPlainObject));
   }
   // A native worker profile, or a Gateway whose controller cannot read its runtime
   // status, receives its node in the environment; the others read the binding file.
@@ -2698,10 +2775,23 @@ let pluginResult;
 let peerStatus;
 let resetWorkspaceNodeTracking = () => {};
 (async () => {
+if (codexBridgeRecordProblem !== undefined) {
+  holdCodexBridgeRecordFailure();
+  return;
+}
 peerStatus = followsPeerStatus
   ? await timeStartupPhase("peer-plugin-status", waitForPeerPluginRuntimeStatus)
   : undefined;
 const started = configureGateway(peerStatus);
+// Doctor reads the configuration the Gateway starts with. Current state adds
+// no await before the spawn.
+// A failure holds the Gateway unready with the step named, rather than
+// restarting into the same refusal and another Doctor backup.
+const outdatedDatabases = outdatedAgentDatabases();
+if (outdatedDatabases.length > 0 && !(await migrateGatewayState(outdatedDatabases))) {
+  setInterval(() => {}, 3600000);
+  return;
+}
 pluginResult = started.pluginResult;
 publishPluginRuntimeStatus({ phase: "ready", ...pluginResult });
 const startWorkspaceNodeId = started.workspaceNodeId;
@@ -3655,16 +3745,38 @@ if (baseline.status !== 0) throw new Error("Workspace initialization failed.");
 const codexEnv = { ...process.env, PATH: harnessPath };
 // Per-run hook capabilities are delivered by the authenticated app-server connection.
 // Keep them outside the model workspace and the file-transfer plugin's roots.
-const hookDirectory = join(process.env.HOME, ".oce-native-hooks");
-mkdirSync(hookDirectory, { recursive: true, mode: 0o700 });
-chmodSync(hookDirectory, 0o700);
-if (process.env.OPENCLAW_NODE_CA_PEM) {
+const hookDirectory = join(process.env.HOME, ${JSON.stringify(NATIVE_HOOK_CREDENTIAL_DIRECTORY)});
+// Hook commands call the Gateway route; they trust the CA the node uses. A SandboxDriver
+// delivers that CA as a file (OPENCLAW_NODE_CA_PATH) instead of the PEM variable.
+let gatewayCa = process.env.OPENCLAW_NODE_CA_PEM || "";
+if (!gatewayCa && process.env.OPENCLAW_NODE_CA_PATH) {
+  try {
+    gatewayCa = readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8").trim();
+  } catch (error) {
+    console.error("Codex hook commands start without the Gateway CA: " + (error.code || "unreadable"));
+  }
+}
+let hookCa = "";
+if (gatewayCa) {
   const inheritedCa = process.env.NODE_EXTRA_CA_CERTS
     ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
     : "";
-  const caPath = join(hookDirectory, "gateway-ca.pem");
-  writeFileSync(caPath, [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM].filter(Boolean).join("\n"), { mode: 0o600 });
-  codexEnv.NODE_EXTRA_CA_CERTS = caPath;
+  hookCa = [inheritedCa, gatewayCa].filter(Boolean).join("\n");
+  codexEnv.NODE_EXTRA_CA_CERTS = join(hookDirectory, "gateway-ca.pem");
+}
+// Harness code runs as this user and can replace the directory, for example with a
+// symlink into the workspace, and on OpenShell HOME survives restarts. Each Codex start
+// removes whatever is there (a link itself, never its target) and creates a fresh 0700
+// directory; the CA copy is created exclusively, so it never follows a link. Credentials
+// left there belong to the previous Codex process's relays; the Gateway writes a new one
+// for each new or resumed run.
+function prepareHookDirectory() {
+  rmSync(hookDirectory, { recursive: true, force: true });
+  mkdirSync(hookDirectory, { mode: 0o700 });
+  chmodSync(hookDirectory, 0o700);
+  if (hookCa) {
+    writeFileSync(join(hookDirectory, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
+  }
 }
 delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
 delete codexEnv.OPENCLAW_NODE_SETUP_PATH;
@@ -3760,7 +3872,12 @@ function nodeArguments() {
 }
 const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
-  { name: "Codex", args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])}, env: codexEnv },
+  {
+    name: "Codex",
+    args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])},
+    env: codexEnv,
+    prepare: prepareHookDirectory,
+  },
 ];
 let stopping = false;
 // An OpenShell Sandbox reports EPERM for a group left with only zombies, as Darwin
@@ -3783,6 +3900,15 @@ function start(slot) {
   if (typeof slot.args === "function" && nodeSetupWait !== undefined) {
     logStartupPhase("node-setup", nodeSetupWait);
     nodeSetupWait = undefined;
+  }
+  try {
+    slot.prepare?.();
+    slot.prepareDelay = undefined;
+  } catch (error) {
+    slot.prepareDelay = Math.min((slot.prepareDelay ?? 500) * 2, 30_000);
+    console.error(slot.name + " start preparation failed: " + (error.code || "error"));
+    slot.timer = setTimeout(() => start(slot), slot.prepareDelay);
+    return;
   }
   const child = spawn(process.execPath, args, {
     env: slot.env, stdio: "inherit", detached: true,

@@ -12,6 +12,7 @@ import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-ima
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
+import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
 import {
   assertStderrMatch,
   fixture,
@@ -1319,10 +1320,14 @@ test("the installed repository journey refuses direct execution before fixture s
   );
   assert.equal(result.status, 1);
   const output = `${result.stdout}\n${result.stderr}`;
-  assert.match(output, /tests 3/);
+  // Every selected installed case refuses; read the run's own totals rather
+  // than hard-coding how many installed cases that file has (finding 1032).
+  const summary = nodeTestSummary(output);
+  assert.ok(summary.tests >= 1, JSON.stringify(summary));
+  assert.equal(summary.fail, summary.tests, JSON.stringify(summary));
   assert.equal(
     (output.match(/Installed repository qualification is temporarily unavailable/g) ?? []).length,
-    3,
+    summary.tests,
   );
 });
 
@@ -1584,7 +1589,7 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
         cluster,
         image: immutableImage,
         // The current runtime must still reject unrelated setup failures before node writes.
-        codexVersion: "0.160.0",
+        codexVersion: "0.163.0-alpha.2",
         execFile: execFileForRuntimeDefaultFailure((command, args) => {
           const commandText = `${command} ${args.join(" ")}`;
           assert.match(commandText, /--namespace/);
@@ -1776,7 +1781,7 @@ test("codex seccomp preparation publishes a reviewed Docker profile for native s
   assert.match(seccomp.profileSha256, /^[a-f0-9]{64}$/);
   assert.equal(
     seccomp.dockerProfilePath,
-    join(clusterDirectory, "docker-seccomp", `codex-0.160.0-${seccomp.profileSha256}.json`),
+    join(clusterDirectory, "docker-seccomp", `codex-0.163.0-alpha.2-${seccomp.profileSha256}.json`),
   );
   const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
   assert.deepEqual(JSON.parse(profileData), installedProfile);
@@ -2147,6 +2152,21 @@ test("prepareLane rejects mutable Kubernetes image inputs before creating state"
         OCC_TEST_OPENSHELL_HELM: "helm",
         OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
         OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
+      },
+    },
+    {
+      lane: "openshell",
+      envName: "OCC_TEST_KEYCLOAK_IMAGE",
+      env: {
+        ...baseModelEnv,
+        ...k3dImages,
+        OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
+        OCC_TEST_OPENSHELL_SANDBOX_IMAGE: immutableImage,
+        OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
+        OCC_TEST_OPENSHELL_HELM: "helm",
+        OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
+        OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
+        OCC_TEST_KEYCLOAK_IMAGE: mutableImage,
       },
     },
   ];

@@ -3,7 +3,7 @@
 // `oce-gateways-<hash>` storage namespace becomes its tenant's namespace. Canonical Secrets,
 // Configurations, service-account credentials and dedicated Gateway state stay where they are;
 // the old Harness namespace's claims move by PersistentVolume rebind and its Agent Secrets are
-// copied byte for byte. OCC's database is not written. See docs/guides/deploy/breaking-changes.md.
+// copied byte for byte. OCC's database is not written. See docs/guides/deploy/breaking-changes-archive.md.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -673,6 +673,19 @@ export async function applyAdoption(
       await startOldApi(kubectl, recorded, { occNamespace, log, sleep, timeoutMs });
     }
     return [];
+  }
+  // After the controller upgrade, stopping its writers would leave OCC down: the old API
+  // restart below only starts the images recorded at apply.
+  for (const component of WRITERS) {
+    if (
+      anyJournal !== undefined &&
+      JSON.stringify(images(writers[component])) !== JSON.stringify(recorded[component].images)
+    ) {
+      throw new AdoptError(
+        `openclaw-enterprise-${component} runs other images than apply recorded; roll the ` +
+          "controller back to the images recorded at apply before adopting more tenants",
+      );
+    }
   }
   // Journals are written before any change, so revert can always restore what was there.
   const journals = [...resumed];
