@@ -15,8 +15,8 @@ real Installation.
 
 **What breaks.** Helm refuses a Secret name shared by two Secret settings
 (installation, auth, database, database CA, sign-in, ChatGPT, kubeconfig,
-repository, sandbox or Gateway) or by a generated Gateway Secret. Profiles with
-`controlPlane.loggingCollector.enabled` need an `exporter`.
+repository, sandbox, Gateway or Collector) or a generated Gateway Secret.
+Profiles with `controlPlane.loggingCollector.enabled` need an `exporter`.
 
 **Who is affected.** Installations sharing those names; the defaults differ.
 
