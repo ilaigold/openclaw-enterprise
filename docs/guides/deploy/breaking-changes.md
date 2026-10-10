@@ -13,8 +13,9 @@ real Installation.
 
 ## 2026-10-10: OpenShell Codex Agents need a new deployment
 
-**What breaks.** Upgrading does not repair OpenShell dedicated Codex Agents
-whose shell commands fail with `bwrap: No permissions to create a new namespace`.
+**What breaks.** A controller-only upgrade does not repair OpenShell dedicated
+Codex Agents whose shell commands fail with
+`bwrap: No permissions to create a new namespace`.
 Since #2079, the OpenShell Sandbox Driver adds `"approvalsReviewer": "user"` to
 the Codex app server settings it freezes when it admits a revision, which keeps
 each turn at `danger-full-access`. A revision admitted earlier keeps its frozen
@@ -22,15 +23,18 @@ settings, so the Gateway still turns Codex's own sandbox on, and that sandbox
 cannot start inside OpenShell.
 
 **Who is affected.** Dedicated Codex Agents on the
-[OpenShell Sandbox Driver](../../reference/drivers/openshell-sandbox.md) last
-deployed by a controller older than #2079 (`66ea9bed5`, 2026-10-10). Other
+[OpenShell Sandbox Driver](../../reference/drivers/openshell-sandbox.md) whose
+active revision was admitted before #2079 (`66ea9bed5`, 2026-10-10). Other
 Harnesses are not affected.
 
 **How to tell.** Every shell command in the Agent's chats fails with that
 `bwrap` message.
 
 **Steps.** Upgrade the controller to `66ea9bed5` or later, then deploy the Agent
-again (`occ agent deploy <id>`). If commands still fail, check `tools.exec`
+again (`occ agent deploy <id>`). A
+[runtime upgrade](production-upgrade.md#upgrade-agent-runtimes) does this for
+every running Agent. The new revision uses the Agent's current Configuration
+draft. If commands still fail, check `tools.exec`
 ([OpenShell credential sources](openshell-credential-sources.md)). _untested_
 
 ## 2026-10-10: Gateway listener settings are checked before deployment
