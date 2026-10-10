@@ -114,7 +114,9 @@ export interface AgentRuntimeLogSource {
 export interface AgentRuntimeHarnessStatus {
   readonly state: "running" | "starting" | "lost" | "unknown";
   readonly code?: SandboxHarnessLostCode | "HARNESS_RESTARTING" | "UNAVAILABLE";
+  /** Present only with `HARNESS_RESTARTING`. */
   readonly exitCode?: number;
+  /** Present only with `HARNESS_RESTARTING`. */
   readonly restarts?: number;
 }
 

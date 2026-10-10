@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -666,7 +667,15 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 			"Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 3). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ agent logs AGENT_ID --source sandbox).\n\n",
 		},
 		{
+			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(-1), "restarts": float64(1)},
+			"Harness Sandbox: starting (HARNESS_RESTARTING, last exit code -1, restart 1). The Harness process exited",
+		},
+		{
 			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": 1.5, "restarts": "3"},
+			"Harness Sandbox: starting (HARNESS_RESTARTING). The Harness process exited",
+		},
+		{
+			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(math.MaxUint32), "restarts": float64(0)},
 			"Harness Sandbox: starting (HARNESS_RESTARTING). The Harness process exited",
 		},
 		{map[string]any{"state": "unknown", "code": "UNAVAILABLE"}, "Harness Sandbox: unknown (UNAVAILABLE)\n\n"},

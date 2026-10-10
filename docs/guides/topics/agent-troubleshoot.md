@@ -96,8 +96,8 @@ the few seconds this takes, then `running`; chat usually answers again within a
 minute. A plain `starting`, with no code, is a first start. A Harness that keeps
 exiting stays `HARNESS_RESTARTING` with a growing restart number while OpenShell
 backs off (up to three minutes between attempts), and the version's diagnostics
-lead with a failed `agent` `sandbox` check with that code. An exit code above 128
-is a signal, such as 137 for a killed process. Read the [Sandbox
+lead with a failed `agent` `sandbox` check with that code. OpenShell reports a
+signal as 128 plus its number, such as 137 for a killed process. Read the [Sandbox
 logs](agent-logs.md#sandbox-source) for the cause. A version deployed by an older
 controller keeps the old behavior until the Agent is deployed again.
 

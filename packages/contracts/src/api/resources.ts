@@ -1453,7 +1453,8 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
             Type.Integer({
               minimum: -2147483648,
               maximum: 2147483647,
-              description: "With HARNESS_RESTARTING: the Harness process's last exit code.",
+              description:
+                "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
             }),
           ),
           restarts: Type.Optional(
@@ -1461,7 +1462,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
               minimum: 1,
               maximum: 4294967295,
               description:
-                "With HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
             }),
           ),
         },

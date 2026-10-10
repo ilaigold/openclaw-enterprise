@@ -707,10 +707,8 @@ test("a crash-looping OpenShell Harness is reported as restarting, not starting"
     observedAt: new Date().toISOString(),
     checks: [],
   });
-  const fixture = await createRuntimeLogFixture({
-    computeDriver,
-    sandboxDriver: openShellSandboxDriver(gateway.client),
-  });
+  const sandboxDriver = openShellSandboxDriver(gateway.client);
+  const fixture = await createRuntimeLogFixture({ computeDriver, sandboxDriver });
   const target = await fixture.deployAgent("harness-restarting");
   await fixture.activate(target);
   const diagnosticsPath = target.runtimePath.replace(/\/runtime$/, "/diagnostics");
@@ -750,6 +748,31 @@ test("a crash-looping OpenShell Harness is reported as restarting, not starting"
       JSON.stringify(sandbox),
     );
   }
+
+  // OCC bounds what any Sandbox Driver reports: a malformed restart reads as a plain start.
+  // A second Agent keeps these reads under the per-Agent runtime route rate limit.
+  const other = await fixture.deployAgent("harness-malformed");
+  await fixture.activate(other);
+  const restart = (exitCode, restarts) =>
+    Object.freeze({ state: "starting", code: "HARNESS_RESTARTING", exitCode, restarts });
+  for (const observed of [
+    restart(1, 0),
+    restart(1, 1.5),
+    restart(1, "3"),
+    restart(1, 2 ** 32),
+    restart(-(2 ** 31) - 1, 1),
+    { state: "starting", code: "HARNESS_RESTARTING" },
+  ]) {
+    sandboxDriver.observeHarness = async () => observed;
+    const runtime = await fixture.request("GET", other.runtimePath);
+    assert.equal(runtime.status, 200, runtime.text);
+    assert.deepEqual(runtime.data.harness, { state: "starting" }, JSON.stringify(observed));
+  }
+  // A negative exit code within int32 is reported as is.
+  sandboxDriver.observeHarness = async () => restart(-1, 2);
+  const negative = await fixture.request("GET", other.runtimePath);
+  assert.equal(negative.status, 200, negative.text);
+  assert.deepEqual(negative.data.harness, restart(-1, 2));
 });
 
 test("OpenShell Sandbox phases map to a Harness observation by name and number", () => {

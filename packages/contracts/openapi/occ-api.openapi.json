@@ -913,13 +913,13 @@
                     ]
                   },
                   "exitCode": {
-                    "description": "With HARNESS_RESTARTING: the Harness process's last exit code.",
+                    "description": "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
                     "maximum": 2147483647,
                     "minimum": -2147483648,
                     "type": "integer"
                   },
                   "restarts": {
-                    "description": "With HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                    "description": "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
                     "maximum": 4294967295,
                     "minimum": 1,
                     "type": "integer"
@@ -18020,13 +18020,13 @@
                               ]
                             },
                             "exitCode": {
-                              "description": "With HARNESS_RESTARTING: the Harness process's last exit code.",
+                              "description": "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
                               "maximum": 2147483647,
                               "minimum": -2147483648,
                               "type": "integer"
                             },
                             "restarts": {
-                              "description": "With HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                              "description": "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
                               "maximum": 4294967295,
                               "minimum": 1,
                               "type": "integer"

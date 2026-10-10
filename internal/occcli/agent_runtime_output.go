@@ -141,10 +141,10 @@ func runtimeHarnessLine(resource map[string]any) string {
 	if code == "HARNESS_RESTARTING" && state == "starting" {
 		// The provider restarts an exited Harness process; a first start has no code.
 		line += " (" + code
-		if exitCode, ok := harnessInteger(harness["exitCode"]); ok {
+		if exitCode, ok := harnessInteger(harness["exitCode"], math.MinInt32, math.MaxInt32); ok {
 			line += ", last exit code " + strconv.FormatInt(exitCode, 10)
 		}
-		if restarts, ok := harnessInteger(harness["restarts"]); ok && restarts > 0 {
+		if restarts, ok := harnessInteger(harness["restarts"], 1, math.MaxUint32); ok {
 			line += ", restart " + strconv.FormatInt(restarts, 10)
 		}
 		return line + "). The Harness process exited and OpenShell is restarting it; " +
@@ -159,10 +159,10 @@ func runtimeHarnessLine(resource map[string]any) string {
 	return line
 }
 
-// harnessInteger reads a JSON number that is a whole 32-bit value, such as an exit code.
-func harnessInteger(value any) (int64, bool) {
+// harnessInteger reads a JSON number that is a whole value within [minimum, maximum].
+func harnessInteger(value any, minimum, maximum float64) (int64, bool) {
 	number, ok := value.(float64)
-	if !ok || number != math.Trunc(number) || number < math.MinInt32 || number > math.MaxUint32 {
+	if !ok || number != math.Trunc(number) || number < minimum || number > maximum {
 		return 0, false
 	}
 	return int64(number), true
