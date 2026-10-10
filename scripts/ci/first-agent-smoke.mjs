@@ -308,7 +308,7 @@ async function buildImages() {
   const controllerTag = `${registry}/oce-smoke/controller:${revision}`;
   const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
   const smokeRuntimeTag = `${registry}/oce-smoke/runtime:${revision}`;
-  // Both builds read the hosted caches the Images and Packaging lane writes.
+  // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
     Promise.all([
       run(

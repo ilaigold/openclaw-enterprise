@@ -852,11 +852,10 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
   }
 }
 
-// Lanes that may restore the hosted BuildKit cache. Only images-packaging
-// exports it, on main pushes, and the main-only warm job (ci-image-cache.yml)
-// builds with that lane's state. The repository platform lane loads its
-// runtime image into the Docker engine so a default-builder fixture build can
-// derive from it.
+// Lanes that restore the hosted BuildKit cache. Only the main-only warm job
+// (ci-image-cache.yml) exports it, building with images-packaging's state. The
+// repository platform lane loads its runtime image into the Docker engine so a
+// default-builder fixture build can derive from it.
 const imageCacheLanes = new Map([
   ["images-packaging", { localStore: false }],
   ["images-model-probes", { localStore: false }],
@@ -888,21 +887,14 @@ function imageBuildArgs(state, role, localStore, cacheWarm = false) {
       "SOURCE_DATE_EPOCH=0",
       "--cache-from",
       `${cache},timeout=60s`,
-      // One writer per image among the parallel image lanes; on main the warm job
-      // writes the same scope too (the last index wins). The warm job exists to
-      // export, so each cache transfer may take longer and a failed export fails
-      // the job instead of being ignored. Pull request runs only restore: their
-      // export cost Images and Packaging about 40 s and filled only their own
-      // merge ref's scope. Main pushes keep the lane's export as a backstop.
-      ...(state.lane === "images-packaging" &&
-      (cacheWarm || process.env.GITHUB_EVENT_NAME === "push")
-        ? [
-            "--cache-to",
-            cacheWarm
-              ? `${cache},mode=max,timeout=10m`
-              : `${cache},mode=max,ignore-error=true,timeout=60s`,
-          ]
-        : []),
+      // Only main's warm job (ci-image-cache.yml) writes the cache. It runs for
+      // every image input change, in order and never cancelled, so the newest
+      // commit's export lands last. CI lanes only restore: a lane export on main
+      // could land after a newer commit's warm export and replace it, and on a
+      // pull request it cost about 40 s and filled only the merge ref's scope.
+      // The warm job exists to export, so each transfer may take longer and a
+      // failed export fails the job instead of being ignored.
+      ...(cacheWarm ? ["--cache-to", `${cache},mode=max,timeout=10m`] : []),
     ];
   }
   return [

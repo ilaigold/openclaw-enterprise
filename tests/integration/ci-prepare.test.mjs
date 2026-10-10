@@ -342,13 +342,10 @@ test("image cache preparation refuses missing credentials and unmapped lanes bef
   }
 });
 
-test("Images and Packaging exports the image caches only on main pushes", async (t) => {
-  for (const [event, exported] of [
-    ["pull_request", false],
-    ["merge_group", false],
-    ["workflow_dispatch", false],
-    ["push", true],
-  ]) {
+// Only main's warm job exports: a lane export on main could land after a newer
+// commit's warm export and replace main's cache with older layers.
+test("Images and Packaging only restores the image caches, on main pushes too", async (t) => {
+  for (const event of ["pull_request", "merge_group", "workflow_dispatch", "push"]) {
     const commands = await fixtureImageCommands(t, "success", "images-packaging", {
       GITHUB_ACTIONS: "true",
       GITHUB_EVENT_NAME: event,
@@ -361,26 +358,20 @@ test("Images and Packaging exports the image caches only on main pushes", async 
     const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
     const builds = calls.filter(({ args }) => args.includes("--load"));
     assert.equal(builds.length, 2, event);
-    // Only a lane that exports the cache skips the probe for an existing image.
-    assert.equal(calls.length, exported ? 2 : 4, event);
+    // Each build first probes for an image the engine already holds.
+    assert.equal(calls.length, 4, event);
     // A fixed epoch keeps independent builds of the same layers on one image ID;
     // the probe must resolve the same ID the build would load.
     for (const { args } of calls) {
       assert.equal(args[args.indexOf("SOURCE_DATE_EPOCH=0") - 1], "--build-arg", event);
     }
-    if (!exported) {
-      assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/, event);
-      assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/, event);
-    }
+    assert.match(prepared.stderr, /"stage":"controller-image-reuse","outcome":"absent"/, event);
+    assert.match(prepared.stderr, /"stage":"runtime-image-reuse","outcome":"absent"/, event);
     for (const { args } of builds) {
       const role = args.includes("--target") ? "controller" : "runtime";
       const cache = `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
       assert.equal(args[args.indexOf("--cache-from") + 1], `${cache},timeout=60s`, event);
-      assert.equal(
-        args.includes("--cache-to") && args[args.indexOf("--cache-to") + 1],
-        exported && `${cache},mode=max,ignore-error=true,timeout=60s`,
-        event,
-      );
+      assert.equal(args.includes("--cache-to"), false, event);
     }
     const cleaned = commands.cleanup();
     assert.equal(cleaned.status, 0, `${event}: ${cleaned.stderr}`);
