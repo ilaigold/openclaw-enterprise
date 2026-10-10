@@ -57,8 +57,8 @@ const reasons = [
 ].join("|");
 
 // Every case spawns Git, the selector or a workflow script, so independent
-// processes run concurrently, a few per CPU.
-const slots = { free: Math.max(2, availableParallelism() * 2), waiting: [] };
+// processes run concurrently, about one per CPU (each spawns more of its own).
+const slots = { free: Math.max(2, availableParallelism()), waiting: [] };
 async function run(program, args, { encoding = "utf8", ...options } = {}) {
   if (slots.free > 0) {
     slots.free -= 1;
@@ -95,7 +95,17 @@ async function command(cwd, program, args) {
   return result.stdout.trim();
 }
 
-const all = (items, each) => Promise.all(items.map(each));
+// Like Promise.all, but waits for every check so no process outlives its
+// test's temporary directories, then rethrows the first failure.
+async function settled(promises) {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) {
+    throw failed.reason;
+  }
+  return results.map((result) => result.value);
+}
+const all = (items, each) => settled(items.map(each));
 
 function tempDir(t, prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -128,9 +138,9 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), content);
   };
-  const commit = async (message) => {
+  const commit = async (message, ...flags) => {
     await git("add", "-A");
-    await git("commit", "-qm", message, "--allow-empty");
+    await git("commit", "-qm", message, ...flags);
     return git("rev-parse", "HEAD");
   };
   await git("init", "-q");
@@ -148,7 +158,7 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
   const base = await commit("base");
   await git("checkout", "-qb", "feature");
   await change({ repo, put, git });
-  const head = await commit("change");
+  const head = await commit("change", "--allow-empty");
   await git("checkout", "-q", "--detach", base);
   if (moveMain) {
     await moveMain({ repo, put, git });
@@ -188,7 +198,7 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
   f.expect = async (mode, overrides = {}) => {
     const path = output("prior=value\n");
     const lanes = JSON.stringify(["checks-baseline-1"]);
-    const [selected, same, other, tests] = await Promise.all([
+    const [selected, same, other, tests] = await settled([
       f.run(["--github-output", path], overrides),
       f.run(["--verify-mode", mode], overrides),
       f.run(["--verify-mode", mode === "docs" ? "full" : "docs"], overrides),
@@ -206,7 +216,7 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
   };
   // Full mode with an exact reason, verified as full and not as docs.
   f.expectReason = async (reason, overrides = {}) => {
-    const [selected, full, docs] = await Promise.all([
+    const [selected, full, docs] = await settled([
       f.select(overrides),
       f.run(["--verify-mode", "full"], overrides),
       f.run(["--verify-mode", "docs"], overrides),
@@ -229,7 +239,7 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
         ? [["--verify-mode", "tests", "--lanes", JSON.stringify([...lanes].reverse())]]
         : []),
     ];
-    const [selected, verified, ...rejected] = await Promise.all([
+    const [selected, verified, ...rejected] = await settled([
       f.select(overrides),
       f.run(["--verify-mode", "tests", "--lanes", json], overrides),
       ...bad.map((args) => f.run(args, overrides)),
@@ -310,7 +320,7 @@ test("pnpm impact reports affected packages from a depth-two merge checkout", as
 });
 
 test("pnpm impact keeps non-workspace and unverified changes unclassified", async (t) => {
-  const [f, mixed] = await Promise.all([
+  const [f, mixed] = await settled([
     fixture(t, ({ put }) => put("cmd/tool.go", "package main\n"), workspaceFiles()),
     fixture(
       t,
@@ -448,10 +458,10 @@ const rawDiff = (f) =>
 
 // Preserve raw path identity so out-of-scope BOM names select full coverage.
 for (const [name, pathBytes, expected] of [
-  ["root BOM docs", Buffer.from("﻿docs/example.md"), "full"],
-  ["root BOM README", Buffer.from("﻿README.md"), "full"],
+  ["root BOM docs", Buffer.from("\uFEFFdocs/example.md"), "full"],
+  ["root BOM README", Buffer.from("\uFEFFREADME.md"), "full"],
   ["ordinary docs", Buffer.from("docs/example.md"), "docs"],
-  ["nested BOM docs", Buffer.from("docs/﻿example.md"), "docs"],
+  ["nested BOM docs", Buffer.from("docs/\uFEFFexample.md"), "docs"],
   ["unknown path", Buffer.from("src/example.md"), "full"],
   [
     "invalid UTF-8",
@@ -463,7 +473,7 @@ for (const [name, pathBytes, expected] of [
     const f = await fixture(t, ({ repo }) => {
       mkdirSync(join(repo, "docs"), { recursive: true });
       mkdirSync(join(repo, "src"), { recursive: true });
-      mkdirSync(join(repo, "﻿docs"), { recursive: true });
+      mkdirSync(join(repo, "\uFEFFdocs"), { recursive: true });
       writeFileSync(Buffer.concat([Buffer.from(`${repo}/`), pathBytes]), "text\n");
     });
     const raw = await rawDiff(f);
@@ -591,7 +601,7 @@ test("all changes are inspected beyond API file-list limits", async (t) => {
       put(`docs/${i}.md`);
     }
   };
-  await Promise.all([
+  await settled([
     expectAll(t, "docs", [[({ put }) => manyDocs(put)]]),
     expectAll(t, "full", [
       [
@@ -639,7 +649,7 @@ test("submodule changes remain visible even when Git configuration ignores them"
 });
 
 test("missing, mismatched or incomplete merge evidence selects full", async (t) => {
-  const [f, empty] = await Promise.all([
+  const [f, empty] = await settled([
     fixture(t, ({ put }) => put("docs/valid.md")),
     fixture(t, () => {}),
   ]);
@@ -707,9 +717,9 @@ function workflowBootstrap(step) {
   return lines.join("\n");
 }
 
-const bootstrapScripts = {
-  select: workflowBootstrap("      - id: select\n"),
-  verify: workflowBootstrap("      - name: Verify selected mode\n"),
+const bootstrapSteps = {
+  select: "      - id: select\n",
+  verify: "      - name: Verify selected mode\n",
 };
 
 async function shallowBootstrap(f) {
@@ -732,20 +742,24 @@ async function shallowBootstrap(f) {
   shallow.run = async (action, expected = "", overrides = {}) => {
     const output = join(f.dir, `github-output-${(outputs += 1)}`);
     writeFileSync(output, "");
-    const result = await run("bash", ["-e", "-o", "pipefail", "-c", bootstrapScripts[action]], {
-      cwd: checkout,
-      env: {
-        ...process.env,
-        RUNNER_TEMP: f.dir,
-        GITHUB_EVENT_NAME: "pull_request",
-        GITHUB_EVENT_PATH: f.eventPath,
-        GITHUB_SHA: f.tested,
-        GITHUB_OUTPUT: output,
-        IMPACT_ACTION: action,
-        EXPECTED_MODE: expected,
-        ...overrides,
+    const result = await run(
+      "bash",
+      ["-e", "-o", "pipefail", "-c", workflowBootstrap(bootstrapSteps[action])],
+      {
+        cwd: checkout,
+        env: {
+          ...process.env,
+          RUNNER_TEMP: f.dir,
+          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_EVENT_PATH: f.eventPath,
+          GITHUB_SHA: f.tested,
+          GITHUB_OUTPUT: output,
+          IMPACT_ACTION: action,
+          EXPECTED_MODE: expected,
+          ...overrides,
+        },
       },
-    });
+    );
     return { ...result, output: readFileSync(output, "utf8") };
   };
   shallow.select = async (overrides = {}) => {
@@ -755,7 +769,7 @@ async function shallowBootstrap(f) {
   };
   shallow.expect = async (mode, overrides = {}) => {
     const lanes = { EXPECTED_LANES: JSON.stringify(["checks-baseline-1"]), ...overrides };
-    const [selected, same, other, tests] = await Promise.all([
+    const [selected, same, other, tests] = await settled([
       shallow.run("select", "", overrides),
       shallow.run("verify", mode, overrides),
       shallow.run("verify", mode === "docs" ? "full" : "docs", overrides),
@@ -772,7 +786,7 @@ async function shallowBootstrap(f) {
     assert.notEqual(tests.status, 0);
   };
   shallow.expectReason = async (reason, overrides = {}) => {
-    const [selected, full, docs] = await Promise.all([
+    const [selected, full, docs] = await settled([
       shallow.select(overrides),
       shallow.run("verify", "full", overrides),
       shallow.run("verify", "docs", overrides),
@@ -792,7 +806,7 @@ async function shallowBootstrap(f) {
       ["full", json],
       ["docs", json],
     ];
-    const [selected, verified, ...rejected] = await Promise.all([
+    const [selected, verified, ...rejected] = await settled([
       shallow.select(overrides),
       shallow.run("verify", "tests", { ...overrides, EXPECTED_LANES: json }),
       ...bad.map(([mode, other]) =>
@@ -844,7 +858,7 @@ test("the checked-in policy can select a documentation-only pull request", async
 test("workflow executes only the base policy on a shallow merge checkout", async (t) => {
   // The PR selector would select docs and leave a marker if the bootstrap ran it.
   const marker = join(tempDir(t, "ci-impact-marker-"), "untrusted-marker");
-  const [[, docs], [, mixed], [, code]] = await Promise.all([
+  const [[, docs], [, mixed], [, code]] = await settled([
     policyFixture(t, docsChange),
     policyFixture(t, ({ put }) => {
       put("scripts/ci/impact.mjs", untrustedSelector(marker, "mode=docs\\n"));
@@ -852,7 +866,7 @@ test("workflow executes only the base policy on a shallow merge checkout", async
     }),
     policyFixture(t, ({ put }) => put("src/app.ts")),
   ]);
-  await Promise.all([docs.expect("docs"), mixed.expect("full"), code.expect("full")]);
+  await settled([docs.expect("docs"), mixed.expect("full"), code.expect("full")]);
   assert.equal(existsSync(marker), false);
 });
 
@@ -874,7 +888,7 @@ test("a documentation-only pull request stays documentation-only after main move
     cwd: shallow.checkout,
   });
   assert.notEqual(stale.status, 0);
-  await Promise.all([f.expect("docs"), shallow.expect("docs")]);
+  await settled([f.expect("docs"), shallow.expect("docs")]);
   assert.equal(await f.select(), "mode=docs\nreason=docs_only\n");
   assert.equal(await shallow.select(), "mode=docs\nreason=docs_only\n");
 });
@@ -903,7 +917,7 @@ test("a non-documentation change still selects full after main moves", async (t)
         return shallow.expect("full");
       }
       assert.notEqual(f.base, f.mergeBase);
-      await Promise.all([f.expect("full"), shallow.expect("full")]);
+      await settled([f.expect("full"), shallow.expect("full")]);
       assert.equal(await f.select(), "mode=full\nreason=ineligible_change\n");
       assert.equal(await shallow.select(), "mode=full\nreason=ineligible_change\n");
     },
@@ -912,7 +926,7 @@ test("a non-documentation change still selects full after main moves", async (t)
 });
 
 test("the tested merge's first parent supplies the trusted policy", async (t) => {
-  const [added, removed] = await Promise.all([
+  const [added, removed] = await settled([
     // The stale event base has no policy; the moved base adds the real one.
     fixture(t, docsChange, {}, {}, { moveMain: ({ put }) => put("scripts/ci/impact.mjs", policy) }),
     // The stale event base has the policy; the moved base removed it.
@@ -925,7 +939,7 @@ test("the tested merge's first parent supplies the trusted policy", async (t) =>
     ),
   ]);
   const [addedCheckout, removedCheckout] = await all([added, removed], shallowBootstrap);
-  await Promise.all([addedCheckout.expect("docs"), removedCheckout.expect("full")]);
+  await settled([addedCheckout.expect("docs"), removedCheckout.expect("full")]);
   assert.equal(await removedCheckout.select(), "mode=full\nreason=bootstrap_policy_unavailable\n");
 });
 
@@ -958,11 +972,11 @@ test("an event base that is present but not behind the tested base selects full"
   assert.equal(await shallow.select(), "mode=full\nreason=bootstrap_checkout_mismatch\n");
   // A head that is not the tested merge's second parent still selects full.
   f.writeEvent(pr(f.base, f.mergeBase));
-  await Promise.all([f.expect("full"), shallow.expect("full")]);
+  await settled([f.expect("full"), shallow.expect("full")]);
 });
 
 test("workflow falls back to full without trustworthy event, parents or base policy", async (t) => {
-  const [noPolicy, [f, shallow]] = await Promise.all([
+  const [noPolicy, [f, shallow]] = await settled([
     fixture(t, docsChange),
     policyFixture(t, docsChange),
   ]);
@@ -985,12 +999,12 @@ test("workflow falls back to full without trustworthy event, parents or base pol
 });
 
 test("unusable base policy cannot select documentation", async (t) => {
-  const [malformed, f] = await Promise.all([
+  const [malformed, f] = await settled([
     fixture(t, docsChange, { "scripts/ci/impact.mjs": "this is not javascript {" }),
     fixture(t, docsChange),
   ]);
   const shallow = await shallowBootstrap(malformed);
-  for (const result of await Promise.all([shallow.run("select"), shallow.run("verify", "docs")])) {
+  for (const result of await settled([shallow.run("select"), shallow.run("verify", "docs")])) {
     assert.notEqual(result.status, 0);
   }
 
@@ -1308,21 +1322,23 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
   });
 });
 
-const summaryScript = workflowBootstrap("      - name: Summarize impact selection\n");
-
 async function summarizeImpact(t, outcome, mode, reason, extra = {}) {
   const summary = join(tempDir(t, "ci-impact-summary-"), "summary");
   writeFileSync(summary, "");
-  const result = await run("bash", ["-e", "-o", "pipefail", "-c", summaryScript], {
-    env: {
-      ...process.env,
-      GITHUB_STEP_SUMMARY: summary,
-      SELECT_OUTCOME: outcome,
-      SELECT_MODE: mode,
-      SELECT_REASON: reason,
-      ...extra,
+  const result = await run(
+    "bash",
+    ["-e", "-o", "pipefail", "-c", workflowBootstrap("      - name: Summarize impact selection\n")],
+    {
+      env: {
+        ...process.env,
+        GITHUB_STEP_SUMMARY: summary,
+        SELECT_OUTCOME: outcome,
+        SELECT_MODE: mode,
+        SELECT_REASON: reason,
+        ...extra,
+      },
     },
-  });
+  );
   assert.equal(result.status, 0, result.stderr);
   return readFileSync(summary, "utf8");
 }
@@ -1373,7 +1389,7 @@ test("legacy base output and selector failures remain honest", async (t) => {
     '`mode=${result.mode}\\nreason=${result.category ?? "unavailable"}\\n${lanes ? `lanes=${lanes}\\n` : ""}`',
     "`mode=${result.mode}\\n`",
   );
-  const [f, failed] = await Promise.all([
+  const [f, failed] = await settled([
     fixture(t, docsChange, { "scripts/ci/impact.mjs": legacy }),
     fixture(t, docsChange, { "scripts/ci/impact.mjs": "process.exit(37);\n" }),
   ]);
@@ -1381,7 +1397,7 @@ test("legacy base output and selector failures remain honest", async (t) => {
   const result = await (await shallowBootstrap(failed)).run("select");
   assert.equal(result.status, 37);
   assert.equal(result.output, "");
-  await Promise.all([
+  await settled([
     assertSummary(t, "success", "docs", "", "docs", "unavailable"),
     assertSummary(t, "failure", "docs", "docs_only", "unavailable", "unavailable"),
     assertSummary(t, "cancelled", "full", "ineligible_change", "unavailable", "unavailable"),
@@ -1389,7 +1405,7 @@ test("legacy base output and selector failures remain honest", async (t) => {
 });
 
 test("impact summary accepts only fixed, consistent literals", async (t) => {
-  await Promise.all([
+  await settled([
     ...[
       "",
       "unknown",
@@ -1411,12 +1427,12 @@ test("impact summary accepts only fixed, consistent literals", async (t) => {
 });
 
 test("real shallow bootstrap reports exact safe reasons for each guard", async (t) => {
-  const [[f, shallow], missing] = await Promise.all([
+  const [[f, shallow], missing] = await settled([
     policyFixture(t, docsChange),
     fixture(t, docsChange),
   ]);
   const check = (reason, overrides) =>
-    Promise.all([
+    settled([
       shallow.expectReason(reason, overrides),
       assertSummary(t, "success", "full", reason, "full", reason),
     ]);
@@ -1447,7 +1463,7 @@ test("real shallow bootstrap reports exact safe reasons for each guard", async (
 });
 
 test("selector distinguishes conservative inspection outcomes", async (t) => {
-  const [f, empty] = await Promise.all([fixture(t, docsChange), fixture(t, () => {})]);
+  const [f, empty] = await settled([fixture(t, docsChange), fixture(t, () => {})]);
   const objects = join(f.dir, "missing-objects");
   mkdirSync(objects);
   await all(
@@ -1470,7 +1486,7 @@ test("selector distinguishes conservative inspection outcomes", async (t) => {
 });
 
 test("summary accepts only mode and reason pairings", async (t) => {
-  await Promise.all([
+  await settled([
     ...[
       "non_pr_event",
       "invalid_event",
@@ -1555,7 +1571,7 @@ test("real Git empty, type-change and non-UTF-8 diffs have accurate conservative
 test("identity failures remain distinct from malformed JSON and failed jq", async (t) => {
   const [f, shallow] = await policyFixture(t, ({ put }) => put("docs/SECRET-change.md"));
   const check = (selectorReason, bootstrapReason, overrides = {}) =>
-    Promise.all([
+    settled([
       f.expectReason(selectorReason, overrides),
       shallow.expectReason(bootstrapReason, overrides),
       ...[selectorReason, bootstrapReason].flatMap((reason) => [
@@ -1576,7 +1592,7 @@ test("identity failures remain distinct from malformed JSON and failed jq", asyn
   await check("invalid_event", "bootstrap_event_unavailable");
   f.writeEvent();
   const overrides = shim(join(f.dir, "identity-jq-shim"), "jq", "#!/bin/sh\nexit 127\n");
-  await Promise.all([
+  await settled([
     shallow.expectReason("bootstrap_event_unavailable", overrides),
     assertSummary(
       t,
@@ -1593,7 +1609,7 @@ test("identity failures remain distinct from malformed JSON and failed jq", asyn
 test("event inspection failures in actual bootstrap and selector are unavailable", async (t) => {
   const [f, shallow] = await policyFixture(t, ({ put }) => put("docs/SECRET-change.md"));
   const missingEvent = join(f.dir, "missing-SECRET-event");
-  await Promise.all([
+  await settled([
     ...[
       shim(join(f.dir, "jq-shim"), "jq", "#!/bin/sh\nexit 127\n"),
       { GITHUB_EVENT_PATH: missingEvent },
@@ -1659,12 +1675,10 @@ const editTest =
   ({ put }) =>
     put(path, `// edited\n${policy.length}\n`);
 // Edits a test file alongside another change.
-const withEdit =
-  (path, change) =>
-  ({ put }) => {
-    put(path, "// edited\n");
-    return change({ put });
-  };
+const withEdit = (path, change) => (context) => {
+  context.put(path, "// edited\n");
+  return change(context);
+};
 const postgresEdit = (change) => withEdit("tests/integration/postgres-a.test.mjs", change);
 
 async function suiteFixture(t, change, extra = {}, options) {
@@ -1723,19 +1737,20 @@ test("a test-only change selects the lanes that list its files", async (t) => {
       ],
       // A file that moves between lanes runs in both.
       [
-        withEdit("tests/integration/k3d-a.test.mjs", ({ put }) => {
+        ({ put }) => {
+          put("tests/integration/k3d-a.test.mjs", "// moved\n");
           put("scripts/ci/test-suites/k3d-fixture-state.json", laneManifest([]));
           put(
             "scripts/ci/test-suites/postgres.json",
             laneManifest([...suiteLanes.postgres, "tests/integration/k3d-a.test.mjs"]),
           );
-        }),
+        },
         ["k3d-fixture-state", "postgres"],
       ],
     ],
     async ([change, lanes]) => {
       const [f, shallow] = await suiteFixture(t, change);
-      await Promise.all([f.expectTests(lanes), shallow.expectTests(lanes)]);
+      await settled([f.expectTests(lanes), shallow.expectTests(lanes)]);
     },
   );
 });
@@ -1753,10 +1768,7 @@ test("a test-only change keeps its lanes after main moves", async (t) => {
     },
   );
   assert.notEqual(f.base, f.mergeBase);
-  await Promise.all([
-    f.expectTests(["k3d-fixture-state"]),
-    shallow.expectTests(["k3d-fixture-state"]),
-  ]);
+  await settled([f.expectTests(["k3d-fixture-state"]), shallow.expectTests(["k3d-fixture-state"])]);
 });
 
 test("helper, fixture and other test-tree changes select full", async (t) => {
@@ -1775,7 +1787,7 @@ test("helper, fixture and other test-tree changes select full", async (t) => {
         t,
         postgresEdit(({ put }) => put(path, "// changed\n")),
       );
-      await Promise.all([f.expect("full"), shallow.expect("full")]);
+      await settled([f.expect("full"), shallow.expect("full")]);
       assert.equal(await shallow.select(), "mode=full\nreason=ineligible_change\n", path);
     },
   );
@@ -1891,7 +1903,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
       [editA, { "scripts/ci/test-suites.json": JSON.stringify(index) }],
     ],
   };
-  await Promise.all([
+  await settled([
     ...Object.entries(cases).map(([reason, changes]) => expectFullReasons(t, reason, changes)),
     fixture(t, editTest("tests/integration/k3d-a.test.mjs"), {
       ...suiteFiles(),
@@ -1921,6 +1933,7 @@ test("the pull request's own selector never decides test-only mode", async (t) =
   );
   await shallow.expect("full");
   assert.equal(await shallow.select(), "mode=full\nreason=ineligible_change\n");
+  // Checked before the legacy base policy below runs, since it writes the same marker.
   assert.equal(existsSync(marker), false);
   const verify = await legacy.run("verify", "tests", { EXPECTED_LANES: '["checks-baseline-1"]' });
   assert.notEqual(verify.status, 0);
@@ -1931,7 +1944,7 @@ test("the pull request's own selector never decides test-only mode", async (t) =
 test("test-only selection is limited to pull request events", async (t) => {
   const [f, shallow] = await suiteFixture(t, editTest("tests/integration/postgres-a.test.mjs"));
   await all(["push", "merge_group", "workflow_dispatch"], (event) =>
-    Promise.all([
+    settled([
       f.expect("full", { GITHUB_EVENT_NAME: event }),
       shallow.expect("full", { GITHUB_EVENT_NAME: event }),
     ]),
@@ -2010,7 +2023,7 @@ test("the lane matrix runs every lane in full mode and only selected lanes in te
     '["runtime-image-fixture"]',
     "[1]",
   ];
-  await Promise.all([
+  await settled([
     ...valid.map(async ([mode, lanes, matrix, withFixture]) => {
       const result = await buildMatrix(t, mode, lanes);
       assert.equal(result.status, 0, result.stderr);
@@ -2036,7 +2049,7 @@ test("impact summary lists validated test-only lanes and nothing else", async (t
       lanes,
     );
   const unavailableLanes = summaryText("tests", "tests_only", "unavailable");
-  await Promise.all([
+  await settled([
     check(
       "tests",
       "tests_only",
@@ -2151,7 +2164,7 @@ test("tests mode flows through the gate to a source-bound aggregate of only its 
   // Without the selection, or with a lane that did not run, results are missing.
   const missing = [undefined, '["checks-baseline-1","postgres","k3d-fixture-state"]'];
   const invalid = ["[]", "not json", '["postgres","postgres"]', '["openshell"]', "{}"];
-  await Promise.all([
+  await settled([
     ...missing.map(async (selection) => {
       const result = await aggregate({ lanes: selection });
       assert.notEqual(result.status, 0);
@@ -2190,5 +2203,5 @@ test("the checked-in suite index and manifests support test-only selection", asy
   const manifest = JSON.parse(initial[join("scripts/ci", index.lanes[lane])]);
   const f = await fixture(t, ({ put }) => put(manifest.files[0].path, "// edited\n"), initial);
   const shallow = await shallowBootstrap(f);
-  await Promise.all([f.expectTests([lane]), shallow.expectTests([lane])]);
+  await settled([f.expectTests([lane]), shallow.expectTests([lane])]);
 });
