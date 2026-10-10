@@ -14,9 +14,10 @@ real Installation.
 ## 2026-10-10: Credential Secrets must be dedicated; profile Collectors need an exporter
 
 **What breaks.** Helm refuses a Secret name shared by two Secret settings
-(installation, auth, database, sign-in, ChatGPT, kubeconfig, repository,
-sandbox, Gateway or Collector) or a generated Gateway Secret. Only the public
-CA settings may share one.
+(installation, auth, database, database CA, sign-in, ChatGPT, kubeconfig,
+repository, sandbox, Gateway or Collector) or a generated Gateway Secret. The
+public CA settings (database, external Gateway and repository) may share one
+with each other.
 Envoy Gateway accepts every entry of the gateway API key Secret as a client
 key, so sharing it made the ChatGPT admin key, a CA certificate or a TLS key a
 valid `x-api-key` on the Agent Gateway listener: such an Installation was never
