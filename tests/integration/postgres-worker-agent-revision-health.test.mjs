@@ -2012,11 +2012,14 @@ test(
       readFailures = 2;
       await waitFor(
         "two failed reads in one pass",
-        async () =>
-          injected >= 3 &&
-          events.some(({ event, code }) => event === "worker.error" && code === "WORKER_UNAVAILABLE")
-            ? true
-            : undefined,
+        async () => {
+          const ended = await fixture.workResult(replacement);
+          assert.equal(ended.rows[0].reason_code, null, "the wait ended");
+          const left = events.some(
+            ({ event, code }) => event === "worker.error" && code === "WORKER_UNAVAILABLE",
+          );
+          return injected >= 3 && left ? true : undefined;
+        },
         30_000,
       );
       const claimed = await fixture.observerPool.query(
