@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -574,6 +575,55 @@ test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () 
   );
 });
 
+// The Gateway TLS and root CA Secrets the chart generates for a release, with the role the
+// preflight names and the refusal Helm gives when the gateway API key Secret reuses one.
+// helmTemplate and baseInput both install into openclaw-system.
+function generatedGatewaySecrets(releaseName, namespace = "openclaw-system") {
+  const gatewayName = `${releaseName}-agent-gateways`.slice(0, 63).replace(/-$/, "");
+  const routeLabel = createHash("sha256")
+    .update(`${namespace}/${gatewayName}`)
+    .digest("hex")
+    .slice(0, 12);
+  return [
+    {
+      name: `${gatewayName}-tls`.slice(0, 63).replace(/-$/, ""),
+      role: "Gateway TLS certificate",
+      helm: /gatewayRouting\.apiKeySecretName must differ from the Gateway TLS Secret/,
+    },
+    {
+      name: `occ-gateway-${routeLabel}-root`,
+      role: "Gateway root CA",
+      helm: /generated gatewayRouting root CA Secret must differ from leaf TLS, API key/,
+    },
+  ];
+}
+
+test(
+  "preflight refuses the gateway API key Secret names the chart generates, as Helm does",
+  { skip: helmSkip },
+  () => {
+    // 47 is the only release length where the TLS name ends in "-" after truncation.
+    for (const releaseName of ["oce", "r".repeat(47), "r".repeat(53)]) {
+      const input = baseInput();
+      input.controlPlane.releaseName = releaseName;
+      const accepted = render("openclaw", input);
+      const manifests = helmTemplate(accepted, [], releaseName);
+      for (const { name, role, helm: refusal } of generatedGatewaySecrets(releaseName)) {
+        assert.match(manifests, new RegExp(`\\n {2}secretName: "${name}"\\n`), name);
+        const override = join(accepted.directory, "gateway-key-collision.yaml");
+        writeFileSync(override, `gatewayRouting:\n  apiKeySecretName: ${name}\n`);
+        const error = renderError(() => helmTemplate(accepted, [override], releaseName));
+        assert.match(`${error.stdout ?? ""}${error.stderr ?? ""}`, refusal);
+        assertPreflightFailure(
+          "openclaw",
+          { ...input, controlPlane: { ...input.controlPlane, gatewayApiKeySecretName: name } },
+          new RegExp(`the chart generates ${name} for the ${role}\\.`),
+        );
+      }
+    }
+  },
+);
+
 function withGitHubSignIn(input, github) {
   const {
     agentNativeAdminDomain: _domain,
@@ -837,6 +887,18 @@ test("preflight rejects inputs that Helm would reject", () => {
         },
       }),
       /controlPlane\.gatewayApiKeySecretName must name a dedicated Secret/,
+    );
+  }
+  for (const { name: gatewayApiKeySecretName } of generatedGatewaySecrets("oce")) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({
+        controlPlane: {
+          ...baseInput().controlPlane,
+          gatewayApiKeySecretName,
+        },
+      }),
+      /controlPlane\.gatewayApiKeySecretName must name a dedicated Secret; the chart generates/,
     );
   }
 
