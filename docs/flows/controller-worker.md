@@ -306,10 +306,10 @@ An unfinished stop publishes nothing: the work defers as
 `REFUSED_CANDIDATE_STOP_PENDING` past the attempt budget, deadline, in-lease shutdowns and,
 once recorded, lost claims until the stop succeeds, after the readiness cadence, doubled per
 failed (not `stopYielded`) stop in evidence, up to 5 minutes
-but at least four times the stop's duration. Each deferral records the refusal as evidence
+but at least four times the stop's duration. Each deferral records the refusal
 (`repeatEvidence`) for deployment status and `worker.completed`. Later passes
 retry only that stop, and errors keep waiting, unless superseded or an authorization or
-backend refusal lifted.
+backend refusal lifted (past the deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
 
 `ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
 Driver interval, including closing sessions and failed runtime retirement,
