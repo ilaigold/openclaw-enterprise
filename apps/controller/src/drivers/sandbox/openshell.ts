@@ -429,6 +429,7 @@ function harnessPort(requirements: HarnessWorkloadRequirements): number {
 const SANDBOX_RESTART_POLICY = "SANDBOX_RESTART_POLICY_ALWAYS";
 // Adoption compares specs exactly. Sandboxes created before OCC set the policy were stored as
 // NEVER (OpenShell normalizes an unset policy), and they stay adoptable for their revision.
+// GetSandbox never returns UNSPECIFIED; it and an absent field are accepted defensively.
 const ADOPTABLE_RESTART_POLICIES: ReadonlySet<string | number | undefined> = new Set([
   undefined,
   "SANDBOX_RESTART_POLICY_UNSPECIFIED",
@@ -451,7 +452,8 @@ const STOPPED_SANDBOX_PHASES: ReadonlySet<string | number> = new Set([
 
 // GetSandbox phases, by enum name and number, of a Sandbox that no longer serves its
 // revision. ERROR covers a deleted or evicted Pod and a failed Harness main process;
-// COMPLETED is a Harness main process that exited 0 while the supervisor stays up.
+// COMPLETED is a Harness main process that exited 0 while the supervisor stays up. Both
+// Harness exits now restart (STARTING), except on Sandboxes an older controller stored as NEVER.
 const LOST_SANDBOX_PHASES: ReadonlyMap<string | number, SandboxHarnessLostCode> = new Map<
   string | number,
   SandboxHarnessLostCode

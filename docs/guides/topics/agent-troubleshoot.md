@@ -91,8 +91,7 @@ a successful revision does not confirm that a third-party connector is usable.
 
 On OpenShell, OCE asks the gateway to restart the Harness whenever its process
 exits. `occ agent runtime AGENT_ID` shows `Harness Sandbox: starting` for the few
-seconds this takes (chat answered again within about 20 seconds in a test), then
-`running`. A Harness that keeps exiting stays `starting` while OpenShell backs off
+seconds this takes, then `running`; chat usually answers again within a minute. A Harness that keeps exiting stays `starting` while OpenShell backs off
 (up to three minutes between attempts); read the [Sandbox
 logs](agent-logs.md#sandbox-source). A version deployed by an older controller
 keeps the old behavior until the Agent is deployed again.
