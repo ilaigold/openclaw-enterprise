@@ -1125,7 +1125,9 @@ function chartGatewaySecretNames(releaseName, namespace) {
 // The chart's dedicated-Secret rule (openclaw.validate), in the chart's order: each Secret the
 // profile names must differ from the chart's own and generated Secrets and from every Secret
 // listed before it. cert-manager writes the generated Gateway Secrets, and Envoy Gateway accepts
-// every entry of the gateway API key Secret as a client key (findings 1044, 1046, 1048).
+// every entry of the gateway API key Secret as a client key (findings 1044, 1046, 1048). The
+// enabled log collector's config and exporter Secrets stay at the chart defaults (finding 1054).
+const chartCollectorSecretNames = ["occ-otel-collector-config", "occ-otel-collector-exporter"];
 function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
   const generated = chartGatewaySecretNames(releaseName, namespace);
   const holders = new Map([
@@ -1135,6 +1137,10 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
     ]),
     [generated.tls, `the chart generates ${generated.tls} for the Gateway TLS certificate`],
     [generated.root, `the chart generates ${generated.root} for the Gateway root CA`],
+    ...(values.logging.collector.enabled ? chartCollectorSecretNames : []).map((name) => [
+      name,
+      `the chart's log collector uses ${name}`,
+    ]),
   ]);
   const repository = values.repositoryCredentials;
   const fields = [
@@ -1164,36 +1170,6 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
       holders.set(name, `${name} is also ${field}`);
     } else {
       diagnostics.errors.push(`${field} must name a dedicated Secret; ${holder}.`);
-    }
-  }
-}
-// The chart's log collector reads its own config and exporter Secrets (left at the chart
-// defaults here) and refuses any credential Secret named like either one.
-const chartCollectorSecretNames = ["occ-otel-collector-config", "occ-otel-collector-exporter"];
-function collectorSecretsDedicated(values, diagnostics) {
-  if (!values.logging.collector.enabled) {
-    return;
-  }
-  const repository = values.repositoryCredentials;
-  const fields = [
-    ["controlPlane.gatewayApiKeySecretName", values.gatewayRouting.apiKeySecretName],
-    ...Object.keys(signInSecretDefaults)
-      .filter((name) => values.auth[name] !== undefined)
-      .map((name) => [`controlPlane.${name}.secretName`, values.auth[name].secretName]),
-    ...(values.backend?.chatgpt?.enabled
-      ? [["codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName]]
-      : []),
-    ...(repository.enabled
-      ? ["serviceConfigSecretName", "appKeySecretName", "tlsSecretName", "publicCaSecretName"].map(
-          (key) => [`repository.${key}`, repository[key]],
-        )
-      : []),
-  ];
-  for (const [field, name] of fields) {
-    if (chartCollectorSecretNames.includes(name)) {
-      diagnostics.errors.push(
-        `${field} must name a dedicated Secret; the chart's log collector uses ${name}.`,
-      );
     }
   }
 }
@@ -1866,7 +1842,6 @@ function buildRendered(profile, parsed, diagnostics) {
   }
 
   dedicatedSecrets(values, releaseName, namespace, diagnostics);
-  collectorSecretsDedicated(values, diagnostics);
   validateDatabaseCaMount(values, diagnostics);
 
   diagnostics.prerequisites.push(

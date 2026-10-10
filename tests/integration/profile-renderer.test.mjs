@@ -774,7 +774,7 @@ test(
     const error = renderError(() => helmTemplate(accepted, [override]));
     assert.match(
       `${error.stdout ?? ""}${error.stderr ?? ""}`,
-      /logging\.collector Secrets must be dedicated and cannot reuse the gateway API key Secret/,
+      /logging\.collector\.configSecretName must name a dedicated Secret; occ-otel-collector-config is also gatewayRouting\.apiKeySecretName/,
     );
     assertFieldRefusals(
       "codex",
@@ -895,9 +895,11 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
       };
       return input;
     },
+    // Finding 1054: the database CA Secret counts too, as in the chart's table.
     cases: [
       "controlPlane.gatewayApiKeySecretName",
       "controlPlane.github.secretName",
+      "controlPlane.databaseCa.secretName",
       "codex.managedServiceAccounts.adminSecretName",
       ...repositorySecretKeys.map((key) => `repository.${key}`),
     ].map((field) => [
