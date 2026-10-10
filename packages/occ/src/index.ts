@@ -2725,16 +2725,29 @@ export class OpenClawController {
     ) {
       throw new DependencyUnavailableError("The deployment's Compute Driver is unavailable.");
     }
-    const [collected, harness] = await Promise.allSettled([
-      driver.diagnoseAgentDeployment!(binding),
-      this.observedHarness(driver, binding, AbortSignal.timeout(HARNESS_OBSERVATION_TIMEOUT_MS)),
-    ]);
-    if (collected.status === "rejected") {
+    // Runs beside Compute's collection; it never throws and stops when Compute fails.
+    const observation = new AbortController();
+    const harness = this.observedHarness(
+      driver,
+      binding,
+      AbortSignal.any([observation.signal, AbortSignal.timeout(HARNESS_OBSERVATION_TIMEOUT_MS)]),
+    );
+    let collected: AgentDeploymentDiagnostics;
+    try {
+      collected = await driver.diagnoseAgentDeployment!(binding);
+    } catch {
+      observation.abort();
       // Native Driver failures can contain private runtime or credential details.
       throw new DependencyUnavailableError("Runtime diagnostics are unavailable.");
     }
-    const diagnostics = deploymentDiagnostics(collected.value, revision.id);
-    const observed = harness.status === "fulfilled" ? harness.value : undefined;
+    let diagnostics: Readonly<AgentDeploymentDiagnostics>;
+    try {
+      diagnostics = deploymentDiagnostics(collected, revision.id);
+    } catch (error) {
+      observation.abort();
+      throw error;
+    }
+    const observed = await harness;
     if (observed === undefined) {
       return diagnostics;
     }
@@ -3027,7 +3040,13 @@ export class OpenClawController {
       return Object.freeze({ state });
     }
     if (state === "lost" && typeof code === "string" && HARNESS_LOST_CODES.has(code)) {
-      return Object.freeze({ state, code: code as SandboxHarnessLostCode });
+      // Only the running Agent's active revision is expected to have a live Sandbox. A
+      // stopped Agent, a retired revision, or a candidate before its Sandbox exists has
+      // none by design, so its absence is not reported as a lost Harness.
+      return binding.agent.desiredRuntimeState === "running" &&
+        binding.agent.activeRevisionId === binding.revision.id
+        ? Object.freeze({ state, code: code as SandboxHarnessLostCode })
+        : Object.freeze({ state: "unknown" as const });
     }
     return unavailable;
   }

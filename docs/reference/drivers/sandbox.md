@@ -43,8 +43,9 @@ Compute activates only a `serving` Harness.
 revision's Harness Sandbox, without contacting the Harness. It answers `running`,
 `starting`, `unknown`, or `lost` with a code: `SANDBOX_MISSING`, `SANDBOX_DELETING`,
 `SANDBOX_STOPPED`, `SANDBOX_FAILED` (for example a deleted Pod) or `HARNESS_EXITED`.
-OCC adds it to the runtime description and diagnostics; nothing recovers a lost
-Sandbox until the Agent is deployed again.
+OCC adds it to the runtime description and diagnostics, and reports `lost` only
+for the running Agent's active revision; nothing recovers a lost Sandbox until
+the Agent is deployed again.
 
 ### Containment facets
 

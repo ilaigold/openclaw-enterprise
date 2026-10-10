@@ -35,6 +35,7 @@ import {
 } from "../../backends/openshell.ts";
 import {
   openShellSandboxLogReader,
+  openShellSandboxObserver,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
@@ -439,7 +440,11 @@ const STARTING_SANDBOX_PHASES: ReadonlySet<string | number> = new Set([
   8,
 ]);
 
-/** Maps the revision's own GetSandbox record (or its absence) to a Harness observation. */
+/**
+ * Maps the revision's own GetSandbox record (or its absence) to a Harness observation.
+ * OpenShell also answers NOT_FOUND to conceal a Sandbox from an identity outside its
+ * Workspace, so `SANDBOX_MISSING` covers a Workspace OCC can no longer read.
+ */
 export function harnessObservation(
   sandbox: { readonly phase?: string | number } | undefined,
 ): SandboxHarnessObservation {
@@ -2354,7 +2359,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const sandbox = this.sandboxRef(context);
-    const existing = await this.gatewayClientForNamespace(sandbox.namespaceName).getSandbox(
+    // Only the phase and the ownership annotation of the record are used.
+    const existing = await openShellSandboxObserver(
+      this.gatewayClientForNamespace(sandbox.namespaceName),
+    ).getSandbox(
       { name: sandbox.resourceName, workspace: workspaceName(context.namespace) },
       context.signal,
     );

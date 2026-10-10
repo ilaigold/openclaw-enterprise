@@ -6,6 +6,7 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import {
   GrpcOpenShellGatewayClient,
   openShellSandboxLogReader,
+  openShellSandboxObserver,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   harnessObservation,
@@ -584,6 +585,13 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
     serviceUrls: {},
     phase,
   });
+  // Before activation the revision is a candidate that may not have its Sandbox yet.
+  gateway.state.sandbox = undefined;
+  const candidate = await fixture.request("GET", target.runtimePath);
+  assert.equal(candidate.status, 200, candidate.text);
+  assert.deepEqual(candidate.data.harness, { state: "unknown" });
+  await fixture.activate(target);
+
   // The full phase table is unit-tested below; the routes are checked on representative
   // records, under the per-Agent runtime route rate limit.
   for (const [sandbox, harness, check] of [
@@ -665,6 +673,23 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
   assert.equal(capped.status, 200, capped.text);
   assert.equal(capped.data.checks.length, 32);
   assert.equal(capped.data.checks[0].code, "SANDBOX_FAILED");
+  // A stopped Agent's Sandbox is removed by design; its absence is not a lost Harness.
+  gateway.state.sandbox = undefined;
+  const stop = await fixture.request(
+    "POST",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/stop`,
+  );
+  assert.equal(stop.status, 202, stop.text);
+  const stopped = await fixture.request("GET", target.runtimePath);
+  assert.equal(stopped.status, 200, stopped.text);
+  assert.deepEqual(stopped.data.harness, { state: "unknown" });
+  const stoppedDiagnostics = await fixture.request("POST", diagnosticsPath);
+  assert.equal(stoppedDiagnostics.status, 200, stoppedDiagnostics.text);
+  assert.deepEqual(
+    { ...stoppedDiagnostics.data.checks[0], checkedAt: undefined },
+    { component: "agent", check: "sandbox", state: "unknown", checkedAt: undefined },
+  );
+
   // Observation reads only; nothing else in OpenShell was touched.
   assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
 });
@@ -752,6 +777,17 @@ test("the OpenShell log reader exposes GetSandboxLogs and nothing else", async (
   assert.equal(Object.isFrozen(reader), true);
   for (const write of ["createSandbox", "deleteSandbox", "exec", "execSandbox", "createProvider"]) {
     assert.equal(write in reader, false, `${write} is not reachable through the reader`);
+  }
+  client.close();
+});
+
+test("the OpenShell Sandbox observer exposes GetSandbox and nothing else", async () => {
+  const client = new GrpcOpenShellGatewayClient({ endpoint: "127.0.0.1:1" });
+  const observer = openShellSandboxObserver(client);
+  assert.deepEqual(Object.keys(observer), ["getSandbox"]);
+  assert.equal(Object.isFrozen(observer), true);
+  for (const write of ["createSandbox", "deleteSandbox", "execSandbox", "getSandboxLogs"]) {
+    assert.equal(write in observer, false, `${write} is not reachable through the observer`);
   }
   client.close();
 });

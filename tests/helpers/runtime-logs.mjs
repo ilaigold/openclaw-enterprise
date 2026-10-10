@@ -427,7 +427,17 @@ export async function createRuntimeLogFixture(options = {}) {
     return { principal, serviceKey: key.key };
   }
 
+  /** Publishes the deployed revision as the Agent's active one, as a worker activation would. */
+  async function activate({ namespace, agent, revisionId }) {
+    // OCC keeps its state store private; the worker that publishes the pointer is not run here.
+    const active = await controller.state.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revisionId),
+    );
+    assert.equal(active?.activeRevisionId, revisionId);
+  }
+
   return {
+    activate,
     app,
     admin,
     adminSession,

@@ -98,7 +98,9 @@ revision's Sandbox Driver for its record of a dedicated Harness Sandbox
 (`observeHarness`, bounded at ten seconds). The result leads the list as an
 `agent` `sandbox` check: `succeeded` while the Sandbox runs, `failed` with a code
 such as `SANDBOX_FAILED` or `HARNESS_EXITED` once it can no longer serve the
-revision, and `unknown` while it starts or when the record is unreadable.
+revision, and `unknown` while it starts (code `STARTING`), when the record is
+unreadable (`UNAVAILABLE`), or for a revision that is not the running Agent's
+active one, such as a stopped Agent whose Sandbox was removed.
 
 ### 3. Return validated evidence
 
