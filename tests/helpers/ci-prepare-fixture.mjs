@@ -41,14 +41,16 @@ export function fixturePreparationMetrics(stderr) {
   });
 }
 
-// spawnSync's result shape and limits, asynchronously: it resolves once the child has
-// exited and closed its output, and a child still running after 30 s gets SIGTERM and
-// an ETIMEDOUT error.
+// spawnSync's result shape and watchdog, asynchronously: it resolves once the child has
+// exited and closed its output. A child still running after 30 s gets SIGTERM and an
+// ETIMEDOUT error, and its output pipes are closed, as spawnSync does. Unlike spawnSync,
+// output is not capped at 1 MiB (these scripts write a few kilobytes).
 function runAsync(env, script, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
       cwd: repositoryRoot,
       env,
+      stdio: ["ignore", "pipe", "pipe"],
     });
     const output = { stdout: "", stderr: "" };
     let error;
@@ -56,10 +58,11 @@ function runAsync(env, script, args) {
       child[stream].setEncoding("utf8");
       child[stream].on("data", (chunk) => (output[stream] += chunk));
     }
-    child.stdin.end();
     const timer = setTimeout(() => {
       error = Object.assign(new Error(`${script} ETIMEDOUT`), { code: "ETIMEDOUT" });
       child.kill("SIGTERM");
+      child.stdout.destroy();
+      child.stderr.destroy();
     }, 30_000);
     child.on("error", (spawnError) => (error ??= spawnError));
     child.on("close", (status, signal) => {

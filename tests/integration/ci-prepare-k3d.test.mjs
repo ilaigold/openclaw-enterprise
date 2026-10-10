@@ -195,10 +195,11 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     const commands = await fixtureImageCommands(t, "cluster-create-hangs-escaped", undefined, {
       OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "4000",
     });
+    // Read before the fixture's own after hook removes the directory: hooks run in order.
     const escapedPids = join(dirname(commands.statePath), "escaped-pids");
-    t.after(async () => {
-      const text = await readFile(escapedPids, "utf8").catch(() => "");
-      for (const pid of text.split("\n").map(Number)) {
+    let escaped = "";
+    t.after(() => {
+      for (const pid of escaped.split("\n").map(Number)) {
         if (!Number.isInteger(pid) || pid <= 0) {
           continue;
         }
@@ -210,6 +211,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       }
     });
     const result = await commands.prepareAsync();
+    escaped = await readFile(escapedPids, "utf8").catch(() => "");
     assert.equal(result.error, undefined, "held output must not reach the CLI watchdog");
     assert.equal(result.status, 0, result.stderr);
     const timings = fixturePreparationMetrics(result.stderr).filter(
