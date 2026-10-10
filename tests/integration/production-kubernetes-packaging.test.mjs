@@ -3560,7 +3560,11 @@ test(
     ]) {
       for (const key of ["configSecretName", "envSecretName"]) {
         await assert.rejects(
-          render({ ...productionCollectorValues, ...feature, [`logging.collector.${key}`]: secret }),
+          render({
+            ...productionCollectorValues,
+            ...feature,
+            [`logging.collector.${key}`]: secret,
+          }),
           ({ code, stderr }) =>
             code !== 0 &&
             stderr.includes(
@@ -3594,8 +3598,7 @@ test("the chart requires installation and database Secret names", tooling, async
     await assert.rejects(
       render({ [key]: "" }),
       ({ code, stderr }) =>
-        code !== 0 &&
-        stderr.includes(`${key} must name the operator-created ${message} Secret`),
+        code !== 0 && stderr.includes(`${key} must name the operator-created ${message} Secret`),
       key,
     );
   }
