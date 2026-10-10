@@ -224,6 +224,31 @@ function assertPreflightFailure(profile, input, expected) {
   assert.match(preflight.errors.join("\n"), expected);
 }
 
+// Sets `field`, a dotted path into a copy of `input`, to each value in turn and expects
+// assertPreflightFailure to pass. A string message is the refusal text after the field name.
+// A failure names the field and the value.
+function assertFieldRefusals(profile, input, field, values, message) {
+  const expected =
+    typeof message === "string"
+      ? new RegExp(`${field} ${message}`.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"))
+      : message;
+  const keys = field.split(".");
+  for (const value of values) {
+    const changed = structuredClone(input);
+    const parent = keys.slice(0, -1).reduce((object, key) => (object[key] ??= {}), changed);
+    parent[keys.at(-1)] = value;
+    try {
+      assertPreflightFailure(profile, changed, expected);
+    } catch (error) {
+      // The reporter prints error.stack, captured with the old message, so prefix both.
+      const label = `${profile} ${field} = ${JSON.stringify(value)}: `;
+      error.message = `${label}${error.message}`;
+      error.stack = `${label}${error.stack}`;
+      throw error;
+    }
+  }
+}
+
 test("renderer supports exactly the openclaw and codex profiles", () => {
   const openclaw = render("openclaw", baseInput());
   assert.equal(openclaw.summary.ok, true);
@@ -345,32 +370,6 @@ test("managed ChatGPT service-account wiring is optional and explicit", () => {
   assert.match(codex.values, /backend:\n {2}chatgpt:\n {4}enabled: true/);
   assert.match(codex.installation, /service_account: chatgpt-service-accounts/);
   assert.match(codex.preflight.warnings.join("\n"), /issuance is wired but remains unverified/);
-});
-
-test("profiles refuse ChatGPT workspace IDs the controller refuses", () => {
-  const message =
-    /codex\.managedServiceAccounts\.workspaceId must be a UUID the controller accepts for a ChatGPT workspace/;
-  for (const workspaceId of [
-    "not-a-uuid",
-    "00000000-0000-0000-0000-000000000000",
-    "11111111-1111-4111-0111-111111111111",
-    "11111111-1111-0111-8111-111111111111",
-  ]) {
-    assertPreflightFailure(
-      "codex",
-      managedCodexInput({
-        codex: {
-          managedServiceAccounts: {
-            workspaceId,
-            adminSecretName: "occ-chatgpt-admin",
-            adminSecretKey: "admin-key",
-            providerCidr: "192.0.2.21/32",
-          },
-        },
-      }),
-      message,
-    );
-  }
 });
 
 test("profiles reject invalid Helm release names before emitting deployment files", (t) => {
@@ -548,13 +547,6 @@ test(
   },
 );
 
-test("profile preset files reject malformed paths and unknown settings", () => {
-  for (const files of ["presets/custom.json", [""], [42]]) {
-    assertPreflightFailure("codex", codexInput({ presets: { files } }), /presets.files/);
-  }
-  assertPreflightFailure("codex", codexInput({ presets: { unknown: true } }), /presets.unknown/);
-});
-
 test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () => {
   const repositoryOutput = render(
     "codex",
@@ -675,53 +667,110 @@ test(
   },
 );
 
-test("preflight refuses lone surrogates, which Helm cannot parse in values.yaml", () => {
-  const cases = [
-    [{ adminEmail: "a\ud800@b.c" }, /controlPlane\.adminEmail must be well-formed Unicode text/],
-    [{ gatewayClassName: "e\udc00g" }, /controlPlane\.gatewayClassName must be well-formed/],
-    [
-      { dns: { namespace: "kube-system", podLabels: { "k8s\ud800": "kube-dns" } } },
-      /controlPlane\.dns\.podLabels keys must be well-formed Unicode text/,
+// Preflight refusals of one input field each, on the openclaw profile and baseInput() unless an
+// entry says otherwise. A case is [field, refused values, message]: field is a dotted path into
+// a fresh input(), and a string message is the refusal text after it.
+for (const { name, profile = "openclaw", input = baseInput, cases } of [
+  {
+    name: "profiles refuse ChatGPT workspace IDs the controller refuses",
+    profile: "codex",
+    input: managedCodexInput,
+    cases: [
+      [
+        "codex.managedServiceAccounts.workspaceId",
+        [
+          "not-a-uuid",
+          "00000000-0000-0000-0000-000000000000",
+          "11111111-1111-4111-0111-111111111111",
+          "11111111-1111-0111-8111-111111111111",
+        ],
+        "must be a UUID the controller accepts for a ChatGPT workspace",
+      ],
     ],
-  ];
-  for (const [override, expected] of cases) {
-    assertPreflightFailure(
-      "openclaw",
-      baseInput({ controlPlane: { ...baseInput().controlPlane, ...override } }),
-      expected,
-    );
-  }
-});
-
-test("preflight refuses GatewayClass names that Kubernetes refuses", () => {
-  for (const gatewayClassName of ["Bad Class", "-eg", "e".repeat(254)]) {
-    assertPreflightFailure(
-      "openclaw",
-      baseInput({
-        controlPlane: {
-          ...baseInput().controlPlane,
-          gatewayClassName,
-        },
-      }),
-      /controlPlane\.gatewayClassName must be a Kubernetes resource name/,
-    );
-  }
-});
-
-test("preflight refuses gateway API key Secret names that Kubernetes refuses", () => {
-  for (const gatewayApiKeySecretName of ["Bad_Name", "-gateway-key", "g".repeat(254)]) {
-    assertPreflightFailure(
-      "openclaw",
-      baseInput({
-        controlPlane: {
-          ...baseInput().controlPlane,
-          gatewayApiKeySecretName,
-        },
-      }),
-      /controlPlane\.gatewayApiKeySecretName must be a Kubernetes resource name/,
-    );
-  }
-});
+  },
+  {
+    name: "preflight refuses lone surrogates, which Helm cannot parse in values.yaml",
+    cases: [
+      ["controlPlane.adminEmail", ["a\ud800@b.c"], "must be well-formed Unicode text"],
+      ["controlPlane.gatewayClassName", ["e\udc00g"], "must be well-formed"],
+      [
+        "controlPlane.dns.podLabels",
+        [{ "k8s\ud800": "kube-dns" }],
+        "keys must be well-formed Unicode text",
+      ],
+    ],
+  },
+  {
+    name: "preflight refuses GatewayClass names that Kubernetes refuses",
+    cases: [
+      [
+        "controlPlane.gatewayClassName",
+        ["Bad Class", "-eg", "e".repeat(254)],
+        "must be a Kubernetes resource name",
+      ],
+    ],
+  },
+  {
+    name: "preflight refuses gateway API key Secret names that Kubernetes refuses",
+    cases: [
+      [
+        "controlPlane.gatewayApiKeySecretName",
+        ["Bad_Name", "-gateway-key", "g".repeat(254)],
+        "must be a Kubernetes resource name",
+      ],
+    ],
+  },
+  {
+    name: "preflight rejects a repository serviceName the chart refuses",
+    profile: "codex",
+    input: () => codexInput({ repository: repositoryConfiguration() }),
+    cases: [
+      [
+        "repository.serviceName",
+        ["1git", "git.openclaw-system.svc", "a".repeat(64), "Git"],
+        "must be a Kubernetes Service DNS-1035 label of at most 63 characters",
+      ],
+    ],
+  },
+  {
+    name: "preflight rejects invalid CIDRs before rendering",
+    profile: "codex",
+    input: codexInput,
+    cases: [
+      [
+        "controlPlane.databaseCidrs",
+        [["999.999.999.999/32"]],
+        /controlPlane\.databaseCidrs\[0\] must be an IPv4 \/32 CIDR/,
+      ],
+      [
+        "codex.managedServiceAccounts",
+        [
+          {
+            workspaceId: "11111111-1111-4111-8111-111111111111",
+            adminSecretName: "occ-chatgpt-admin",
+            providerCidr: "999.999.999.999/32",
+          },
+        ],
+        /codex\.managedServiceAccounts\.providerCidr must be an IPv4 \/32 CIDR/,
+      ],
+    ],
+  },
+  {
+    name: "profile preset files reject malformed paths and unknown settings",
+    profile: "codex",
+    input: codexInput,
+    cases: [
+      ["presets.files", ["presets/custom.json", [""], [42]], /presets\.files/],
+      ["presets.unknown", [true], /presets\.unknown/],
+    ],
+  },
+]) {
+  test(name, () => {
+    for (const [field, values, message] of cases) {
+      assertFieldRefusals(profile, input(), field, values, message);
+    }
+  });
+}
 
 test("label values that YAML 1.1 would retype stay strings", () => {
   const labels = {
@@ -790,17 +839,6 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
   );
 });
 
-test("preflight rejects a repository serviceName the chart refuses", () => {
-  const repositoryInput = repositoryConfiguration();
-  for (const serviceName of ["1git", "git.openclaw-system.svc", "a".repeat(64), "Git"]) {
-    assertPreflightFailure(
-      "codex",
-      codexInput({ repository: { ...repositoryInput, serviceName } }),
-      /repository\.serviceName must be a Kubernetes Service DNS-1035 label of at most 63 characters/,
-    );
-  }
-});
-
 test("repository serviceName is left to the chart so its upgrade guard applies", () => {
   const repositoryInput = repositoryConfiguration();
   const omitted = render("codex", codexInput({ repository: repositoryInput }));
@@ -825,127 +863,64 @@ test("repository serviceName is left to the chart so its upgrade guard applies",
 });
 
 test("preflight rejects inputs that the selected profile does not consume", () => {
-  assertPreflightFailure(
+  assertFieldRefusals(
     "openclaw",
-    baseInput({
-      runtime: {
-        ...baseInput().runtime,
-        codexSeccompProfile: "profiles/codex.json",
-      },
-    }),
-    /runtime.codexSeccompProfile is only consumed by the codex profile/,
+    baseInput(),
+    "runtime.codexSeccompProfile",
+    ["profiles/codex.json"],
+    "is only consumed by the codex profile",
   );
-
-  assertPreflightFailure(
+  assertFieldRefusals(
     "codex",
-    codexInput({
-      repository: {
-        enabled: false,
-        backendId: "github-primary",
-      },
-    }),
-    /repository fields other than enabled are only consumed/,
-  );
-});
-
-test("preflight rejects invalid CIDRs before rendering", () => {
-  assertPreflightFailure(
-    "codex",
-    codexInput({
-      controlPlane: {
-        ...baseInput().controlPlane,
-        databaseCidrs: ["999.999.999.999/32"],
-      },
-    }),
-    /controlPlane.databaseCidrs\[0\] must be an IPv4 \/32 CIDR/,
-  );
-
-  assertPreflightFailure(
-    "codex",
-    managedCodexInput({
-      codex: {
-        modelDiscoveryCidrs: ["192.0.2.20/32"],
-        managedServiceAccounts: {
-          workspaceId: "11111111-1111-4111-8111-111111111111",
-          adminSecretName: "occ-chatgpt-admin",
-          providerCidr: "999.999.999.999/32",
-        },
-      },
-    }),
-    /codex.managedServiceAccounts.providerCidr must be an IPv4 \/32 CIDR/,
+    codexInput(),
+    "repository",
+    [{ enabled: false, backendId: "github-primary" }],
+    "fields other than enabled are only consumed",
   );
 });
 
 test("preflight rejects inputs that Helm would reject", () => {
-  for (const gatewayApiKeySecretName of ["occ-installation-startup", "occ-database", "occ-auth"]) {
-    assertPreflightFailure(
-      "openclaw",
-      baseInput({
-        controlPlane: {
-          ...baseInput().controlPlane,
-          gatewayApiKeySecretName,
-        },
-      }),
-      /controlPlane\.gatewayApiKeySecretName must name a dedicated Secret/,
-    );
-  }
-  for (const { name: gatewayApiKeySecretName } of generatedGatewaySecrets("oce")) {
-    assertPreflightFailure(
-      "openclaw",
-      baseInput({
-        controlPlane: {
-          ...baseInput().controlPlane,
-          gatewayApiKeySecretName,
-        },
-      }),
-      /controlPlane\.gatewayApiKeySecretName must name a dedicated Secret; the chart generates/,
-    );
-  }
-
-  assertPreflightFailure(
-    "codex",
-    codexInput({
-      controlPlane: {
-        ...baseInput().controlPlane,
-        metrics: {
-          scraperNamespaceLabels: { name: "monitoring" },
-        },
-      },
-    }),
-    /controlPlane.metrics requires both scraperNamespaceLabels and scraperPodLabels, or neither/,
+  assertFieldRefusals(
+    "openclaw",
+    baseInput(),
+    "controlPlane.gatewayApiKeySecretName",
+    ["occ-installation-startup", "occ-database", "occ-auth"],
+    "must name a dedicated Secret",
   );
-
-  assertPreflightFailure(
-    "codex",
-    codexInput({
-      controlPlane: {
-        ...baseInput().controlPlane,
-        agentNativeAdminDomain: "https://agents.oce.example.internal",
-      },
-    }),
-    /controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path/,
+  assertFieldRefusals(
+    "openclaw",
+    baseInput(),
+    "controlPlane.gatewayApiKeySecretName",
+    generatedGatewaySecrets("oce").map(({ name }) => name),
+    "must name a dedicated Secret; the chart generates",
   );
-
-  assertPreflightFailure(
+  assertFieldRefusals(
     "codex",
-    codexInput({
-      controlPlane: {
-        ...baseInput().controlPlane,
-        agentNativeAdminDomain: "agents.other.example.internal",
-      },
-    }),
-    /controlPlane.agentNativeAdminDomain must be inside controlPlane.sharedCookieDomain/,
+    codexInput(),
+    "controlPlane.metrics",
+    [{ scraperNamespaceLabels: { name: "monitoring" } }],
+    "requires both scraperNamespaceLabels and scraperPodLabels, or neither",
   );
-
-  assertPreflightFailure(
+  assertFieldRefusals(
     "codex",
-    codexInput({
-      controlPlane: {
-        ...baseInput().controlPlane,
-        authBaseUrl: "https://console.example.internal",
-      },
-    }),
-    /controlPlane.authBaseUrl host must be inside controlPlane.sharedCookieDomain/,
+    codexInput(),
+    "controlPlane.agentNativeAdminDomain",
+    ["https://agents.oce.example.internal"],
+    "must be a DNS hostname without a wildcard, port, scheme, or path",
+  );
+  assertFieldRefusals(
+    "codex",
+    codexInput(),
+    "controlPlane.agentNativeAdminDomain",
+    ["agents.other.example.internal"],
+    "must be inside controlPlane.sharedCookieDomain",
+  );
+  assertFieldRefusals(
+    "codex",
+    codexInput(),
+    "controlPlane.authBaseUrl",
+    ["https://console.example.internal"],
+    "host must be inside controlPlane.sharedCookieDomain",
   );
 
   // The API refuses a public-suffix cookie domain at startup (tldts, private registries
@@ -970,19 +945,16 @@ test("preflight rejects inputs that Helm would reject", () => {
     assert.equal(render("codex", nativeAdminUnder(sharedCookieDomain)).summary.ok, true);
   }
 
-  assertPreflightFailure(
+  assertFieldRefusals(
     "codex",
-    codexInput({
-      controlPlane: {
-        ...baseInput().controlPlane,
-        authBaseUrl: "http://console.oce.example.internal",
-      },
-    }),
-    /controlPlane.authBaseUrl must use HTTPS with native admin/,
+    codexInput(),
+    "controlPlane.authBaseUrl",
+    ["http://console.oce.example.internal"],
+    "must use HTTPS with native admin",
   );
 
   // The API and the bootstrap Job accept only an absolute HTTP(S) origin.
-  for (const authBaseUrl of [
+  const invalidOrigins = [
     "https://console.oce.example.internal/occ",
     "https://console.oce.example.internal?next=1",
     "https://console.oce.example.internal#console",
@@ -1028,13 +1000,14 @@ test("preflight rejects inputs that Helm would reject", () => {
       "\u200b",
       "\u00ad",
     ].map((space) => `https://console${space}.oce.example.internal`),
-  ]) {
-    assertPreflightFailure(
-      "codex",
-      codexInput({ controlPlane: { ...baseInput().controlPlane, authBaseUrl } }),
-      /controlPlane.authBaseUrl must be an absolute HTTP\(S\) origin URL without a path, query, fragment, or user info/,
-    );
-  }
+  ];
+  assertFieldRefusals(
+    "codex",
+    codexInput(),
+    "controlPlane.authBaseUrl",
+    invalidOrigins,
+    "must be an absolute HTTP(S) origin URL without a path, query, fragment, or user info",
+  );
   // The API accepts these, and so does the renderer: ASCII spaces and tabs at the ends, which
   // URL parsing strips, and hosts with non-ASCII letters, including the joiners U+200C and
   // U+200D that some IDN labels need.
