@@ -297,19 +297,22 @@ attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
 terminates work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
-Before publishing a permanent refusal of an inactive candidate that is exclusive,
-or prepared while its Agent has no active revision (not a held runtime failure,
-the deadline or exhausted retries), `ControllerWorker.stopRefusedCandidate`
-stops it under the claim heartbeat, so a rejected deployment never serves. Kubernetes deletes
-its Harness before the Gateway drains; Pod waits yield to due work (`withYieldingComputeStop`).
+Before publishing a permanent refusal (not a held runtime failure, the deadline
+or exhausted retries), `ControllerWorker.stopRefusedCandidate` stops, under the
+claim heartbeat, an inactive candidate that is exclusive or was prepared with no
+active revision, so a rejected deployment never serves. Kubernetes
+deletes the Harness before awaiting Gateway Pods; Pod waits yield to due work
+(`withYieldingComputeStop`).
+
 An unfinished stop publishes nothing: the work defers as
-`REFUSED_CANDIDATE_STOP_PENDING` past the attempt budget, deadline, in-lease shutdowns and,
-once recorded, lost claims until the stop succeeds, after the readiness cadence, doubled per
-failed (not `stopYielded`) stop in evidence, up to 5 minutes
-but at least four times the stop's duration. Each deferral records the refusal
-(`repeatEvidence`) for deployment status and `worker.completed`. Later passes
-retry only that stop, and errors keep waiting, unless superseded or an authorization or
-backend refusal lifted (past the deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
+`REFUSED_CANDIDATE_STOP_PENDING` until the stop succeeds, past the attempt
+budget, deadline, in-lease shutdowns and, once recorded, lost claims. The
+recheck doubles the readiness cadence per failed (not `stopYielded`) stop in
+evidence, up to 5 minutes, but is at least four times the stop's duration.
+Each deferral records the refusal (`repeatEvidence`) for deployment status and
+`worker.completed`. Later passes retry only that stop, and errors keep waiting,
+unless superseded or an authorization or backend refusal lifted (past the
+deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
 
 `ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
 Driver interval, including closing sessions and failed runtime retirement,
