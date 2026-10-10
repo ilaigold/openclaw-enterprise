@@ -273,6 +273,7 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
             },
           },
         },
+        restart_policy: "SANDBOX_RESTART_POLICY_ALWAYS",
       },
     };
     const created = await client.createSandbox(request, AbortSignal.timeout(2_000));
@@ -343,6 +344,8 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
       websocket_credential_rewrite: true,
       credential_binding: { provider: "oce-runtime-example" },
     });
+    // Field 15 of the pinned gateway's SandboxSpec (finding 1029).
+    assert.equal(createRequests[0].spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
     assert.deepEqual(createRequests[0].spec.policy.network_policies.model.binaries, [
       { path: "/app/bin/model-client" },
     ]);
