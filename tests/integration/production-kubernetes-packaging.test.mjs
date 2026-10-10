@@ -524,6 +524,30 @@ test(
       render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
       /dedicated Secrets/,
     );
+    // Optional credential Secrets count once enabled (finding 1046): the ChatGPT admin and
+    // sign-in Secrets, and the Gateway TLS and root CA Secrets cert-manager writes.
+    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+    for (const [values, secret, role] of [
+      [chatgptValues, "occ-chatgpt-admin", "ChatGPT Backend"],
+      [githubLoginValues, "occ-github-login", "auth.github sign-in"],
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "Gateway TLS"],
+      [gatewayRoutingValues, gatewayRoot, "generated Gateway root CA"],
+    ]) {
+      for (const key of ["apiKubeconfigSecretName", "workerKubeconfigSecretName"]) {
+        await assert.rejects(
+          render({ ...execution, ...values, [`executionCluster.${key}`]: secret }),
+          ({ code, stderr }) =>
+            code !== 0 &&
+            stderr.includes(
+              `executionCluster kubeconfigs require dedicated Secrets distinct from platform credentials; ${secret} is also the ${role} Secret`,
+            ),
+          `${key} = ${secret}`,
+        );
+      }
+      // Until that feature is enabled, its Secret name is free.
+      await render({ ...execution, "executionCluster.apiKubeconfigSecretName": secret });
+      await render({ ...execution, ...values });
+    }
     const objects = await resources((await render(execution)).stdout);
     for (const component of ["api", "worker"]) {
       const pod = objects.find(
@@ -3478,6 +3502,41 @@ test(
       ...gatewayRoutingValues,
       "gatewayRouting.apiKeySecretName": "occ-chatgpt-admin",
     });
+  },
+);
+
+test(
+  "the chart refuses sign-in Secrets that share a Gateway certificate Secret",
+  tooling,
+  async () => {
+    // cert-manager writes the generated Gateway TLS and root CA Secrets and would overwrite a
+    // sign-in Secret sharing either name (finding 1046).
+    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+    const externalCa = {
+      ...externalGatewayRoutingValues,
+      "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+      "gatewayRouting.issuerRef.group": "cert-manager.io",
+      "gatewayRouting.caSecretName": "occ-private-ca",
+      "gatewayRouting.caSecretKey": "ca.crt",
+    };
+    for (const [routing, secret, role] of [
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "Gateway TLS"],
+      [gatewayRoutingValues, gatewayRoot, "generated Gateway root CA"],
+      [externalCa, "occ-private-ca", "Gateway CA"],
+    ]) {
+      await assert.rejects(
+        render({ ...routing, ...githubLoginValues, "auth.github.secretName": secret }),
+        ({ code, stderr }) =>
+          code !== 0 &&
+          stderr.includes(
+            `auth.github credentials must use a dedicated Secret distinct from the ${role} Secret`,
+          ),
+        secret,
+      );
+      // Without gateway routing those names are free.
+      await render({ ...githubLoginValues, "auth.github.secretName": secret });
+    }
+    await render({ ...externalCa, ...githubLoginValues });
   },
 );
 
