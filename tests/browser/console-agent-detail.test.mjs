@@ -4391,8 +4391,7 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
       await writeFile(join(root, owner.id, name), `# Saved ${name}\n`);
     }
   }
-  // A read alone must not create an edit. HTML textareas normalize CRLF to LF,
-  // while the stored file remains byte-for-byte unchanged until an explicit save.
+  // Textareas show CRLF as LF; an untouched read must not enable Save or write.
   const original = "# Saved AGENTS.md\r\n# Windows instructions\r\n";
   await writeFile(join(root, agent.id, "AGENTS.md"), original);
   const { page } = await newPage(t, fixture);

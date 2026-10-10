@@ -3963,12 +3963,12 @@ export const scenarios = {
     deployed: true,
     workspaceFiles: { "USER.md": "# Saved USER.md\r\n# Windows instructions\r\n" },
     description:
-      "The editor displays LF, but an untouched CRLF file stays clean. Save enables only after an edit.",
+      "An untouched CRLF file shows LF and stays clean. Save enables only after an edit.",
     steps: [
       "Reload USER.md without editing; Save stays disabled.",
       "Edit USER.md, then Save and Reload.",
     ],
-    gap: "Simulated file transport; genuine Native/API proof is recorded separately.",
+    gap: "Simulated files; no live Agent gateway.",
   },
   workspaceUnavailable: {
     group: "Components/Workspace",
