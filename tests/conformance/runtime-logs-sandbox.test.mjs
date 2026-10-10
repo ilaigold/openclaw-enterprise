@@ -699,6 +699,82 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
   assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
 });
 
+test("a crash-looping OpenShell Harness is reported as restarting, not starting", async () => {
+  const gateway = logOnlyGatewayClient();
+  const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE });
+  computeDriver.diagnoseAgentDeployment = async (binding) => ({
+    revisionId: binding.revision.id,
+    observedAt: new Date().toISOString(),
+    checks: [],
+  });
+  const sandboxDriver = openShellSandboxDriver(gateway.client);
+  const fixture = await createRuntimeLogFixture({ computeDriver, sandboxDriver });
+  const target = await fixture.deployAgent("harness-restarting");
+  await fixture.activate(target);
+  const diagnosticsPath = target.runtimePath.replace(/\/runtime$/, "/diagnostics");
+  const starting = (restart) => ({
+    name: "sb-x",
+    labels: {},
+    annotations: { "openclaw.dev/revision-id": target.revisionId },
+    serviceUrls: {},
+    phase: "SANDBOX_PHASE_STARTING",
+    ...restart,
+  });
+  for (const [sandbox, harness, check] of [
+    // Restart policy ALWAYS, in backoff after the Harness was killed (finding 1043).
+    [
+      starting({ exitCode: 137, restartCount: 4 }),
+      { state: "starting", code: "HARNESS_RESTARTING", exitCode: 137, restarts: 4 },
+      { state: "failed", code: "HARNESS_RESTARTING" },
+    ],
+    // A first start stays `starting`.
+    [starting({}), { state: "starting" }, { state: "unknown", code: "STARTING" }],
+    // OCC reports only a 32-bit exit code; anything else reads as a plain start.
+    [
+      starting({ exitCode: 2 ** 40, restartCount: 2 }),
+      { state: "starting" },
+      { state: "unknown", code: "STARTING" },
+    ],
+  ]) {
+    gateway.state.sandbox = sandbox;
+    const runtime = await fixture.request("GET", target.runtimePath);
+    assert.equal(runtime.status, 200, runtime.text);
+    assert.deepEqual(runtime.data.harness, harness, JSON.stringify(sandbox));
+    const diagnostics = await fixture.request("POST", diagnosticsPath);
+    assert.equal(diagnostics.status, 200, diagnostics.text);
+    assert.deepEqual(
+      { ...diagnostics.data.checks[0], checkedAt: undefined },
+      { component: "agent", check: "sandbox", checkedAt: undefined, ...check },
+      JSON.stringify(sandbox),
+    );
+  }
+
+  // OCC bounds what any Sandbox Driver reports: a malformed restart reads as a plain start.
+  // A second Agent keeps these reads under the per-Agent runtime route rate limit.
+  const other = await fixture.deployAgent("harness-malformed");
+  await fixture.activate(other);
+  const restart = (exitCode, restarts) =>
+    Object.freeze({ state: "starting", code: "HARNESS_RESTARTING", exitCode, restarts });
+  for (const observed of [
+    restart(1, 0),
+    restart(1, 1.5),
+    restart(1, "3"),
+    restart(1, 2 ** 32),
+    restart(-(2 ** 31) - 1, 1),
+    { state: "starting", code: "HARNESS_RESTARTING" },
+  ]) {
+    sandboxDriver.observeHarness = async () => observed;
+    const runtime = await fixture.request("GET", other.runtimePath);
+    assert.equal(runtime.status, 200, runtime.text);
+    assert.deepEqual(runtime.data.harness, { state: "starting" }, JSON.stringify(observed));
+  }
+  // A negative exit code within int32 is reported as is.
+  sandboxDriver.observeHarness = async () => restart(-1, 2);
+  const negative = await fixture.request("GET", other.runtimePath);
+  assert.equal(negative.status, 200, negative.text);
+  assert.deepEqual(negative.data.harness, restart(-1, 2));
+});
+
 test("OpenShell Sandbox phases map to a Harness observation by name and number", () => {
   for (const [phases, expected] of [
     [["SANDBOX_PHASE_READY", 2], { state: "running" }],
@@ -724,6 +800,42 @@ test("OpenShell Sandbox phases map to a Harness observation by name and number",
     }
   }
   assert.deepEqual(harnessObservation(undefined), { state: "lost", code: "SANDBOX_MISSING" });
+});
+
+test("a Harness the gateway restarts is told apart from a first start", () => {
+  // OpenShell keeps the exited process's code and a restart number while STARTING a policy
+  // restart, and clears both once the replacement is ready or an operator restarts it.
+  for (const phase of ["SANDBOX_PHASE_STARTING", 8]) {
+    assert.deepEqual(harnessObservation({ phase, exitCode: 1, restartCount: 1 }), {
+      state: "starting",
+      code: "HARNESS_RESTARTING",
+      exitCode: 1,
+      restarts: 1,
+    });
+    assert.deepEqual(harnessObservation({ phase, exitCode: 0, restartCount: 7 }), {
+      state: "starting",
+      code: "HARNESS_RESTARTING",
+      exitCode: 0,
+      restarts: 7,
+    });
+  }
+  for (const record of [
+    { phase: "SANDBOX_PHASE_STARTING" },
+    { phase: "SANDBOX_PHASE_STARTING", exitCode: 1 },
+    { phase: "SANDBOX_PHASE_STARTING", restartCount: 2 },
+    { phase: "SANDBOX_PHASE_PROVISIONING", exitCode: 1, restartCount: 2 },
+  ]) {
+    assert.deepEqual(harnessObservation(record), { state: "starting" }, JSON.stringify(record));
+  }
+  // A replacement that became ready keeps its restart number but no exit code.
+  assert.deepEqual(harnessObservation({ phase: "SANDBOX_PHASE_READY", restartCount: 3 }), {
+    state: "running",
+  });
+  // A terminal record wins over restart state.
+  assert.deepEqual(
+    harnessObservation({ phase: "SANDBOX_PHASE_ERROR", exitCode: 1, restartCount: 3 }),
+    { state: "lost", code: "SANDBOX_FAILED" },
+  );
 });
 
 test("the OpenShell Sandbox Driver observes only its own dedicated revisions", async () => {

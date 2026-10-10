@@ -814,8 +814,13 @@ function harnessDiagnosticCheck(
   observed: AgentRuntimeHarnessStatus,
   checkedAt: string,
 ): RuntimeDiagnosticCheck {
+  // A Harness process that exited has failed even while its provider restarts it.
   const state =
-    observed.state === "running" ? "succeeded" : observed.state === "lost" ? "failed" : "unknown";
+    observed.state === "running"
+      ? "succeeded"
+      : observed.state === "lost" || observed.code === "HARNESS_RESTARTING"
+        ? "failed"
+        : "unknown";
   const code = observed.code ?? (observed.state === "starting" ? "STARTING" : undefined);
   return Object.freeze({
     component: "agent",
@@ -3036,6 +3041,23 @@ export class OpenClawController {
     }
     const state = asRecord(observed)?.state;
     const code = asRecord(observed)?.code;
+    if (state === "starting" && code === "HARNESS_RESTARTING") {
+      const exitCode = asRecord(observed)?.exitCode;
+      const restarts = asRecord(observed)?.restarts;
+      // Only bounded integers are reported; a malformed restart reads as a plain start.
+      if (
+        typeof exitCode === "number" &&
+        Number.isSafeInteger(exitCode) &&
+        exitCode >= -2_147_483_648 &&
+        exitCode <= 2_147_483_647 &&
+        typeof restarts === "number" &&
+        Number.isSafeInteger(restarts) &&
+        restarts >= 1 &&
+        restarts <= 4_294_967_295
+      ) {
+        return Object.freeze({ state, code, exitCode, restarts });
+      }
+    }
     if (state === "running" || state === "starting" || state === "unknown") {
       return Object.freeze({ state });
     }
