@@ -28,6 +28,10 @@ and log polling. `agent_runtime_output.go` owns runtime log text, notices, and P
 diagnostics. `output.go` owns resource tables, structured output, and shared
 formatting helpers.
 
+Within `internal/occdev/`, `openshell_assets.go` owns local OpenShell chart and
+manifest selection, verified downloads, and source extraction. `openshell.go`
+owns their deployment, workspace resource rendering, and image import.
+
 ## Source ownership
 
 | Path                                                      | Responsibility                                                                                               |
