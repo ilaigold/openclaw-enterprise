@@ -3429,6 +3429,59 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
 });
 
 test(
+  "the chart refuses a gateway API key Secret that holds other credentials",
+  tooling,
+  async () => {
+    // Envoy Gateway's apiKeyAuth accepts every entry of the gateway API key Secret as a
+    // client key, so a shared Secret would make the ChatGPT admin key, a CA certificate or a
+    // TLS key a valid x-api-key.
+    const sandboxValues = {
+      ...agentNativeAdminValues,
+      "gatewayRouting.sandbox.enabled": "true",
+      "gatewayRouting.sandbox.domain": "previews.example.test",
+      "gatewayRouting.sandbox.tlsSecretName": "preview-wildcard",
+      "gatewayRouting.sandbox.ingressPeers[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "public-ingress",
+    };
+    for (const [values, shared, refusal] of [
+      [
+        chatgptValues,
+        { "gatewayRouting.apiKeySecretName": "occ-chatgpt-admin" },
+        /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/,
+      ],
+      [
+        chatgptValues,
+        { "backend.chatgpt.secretName": "occ-gateway-api-key" },
+        /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/,
+      ],
+      [
+        databaseCaValues,
+        { "database.caSecretName": "occ-gateway-api-key" },
+        /gatewayRouting\.apiKeySecretName must differ from the database CA Secret/,
+      ],
+      [
+        sandboxValues,
+        { "gatewayRouting.sandbox.tlsSecretName": "occ-gateway-api-key" },
+        /gatewayRouting\.apiKeySecretName must differ from the sandbox wildcard TLS Secret/,
+      ],
+    ]) {
+      await assert.rejects(
+        render({ ...gatewayRoutingValues, ...values, ...shared }),
+        ({ code, stderr }) => code !== 0 && refusal.test(stderr),
+        JSON.stringify(shared),
+      );
+      // The same values with distinct names render.
+      await render({ ...gatewayRoutingValues, ...values });
+    }
+    // Without the ChatGPT Backend the chart does not reserve that name.
+    await render({
+      ...gatewayRoutingValues,
+      "gatewayRouting.apiKeySecretName": "occ-chatgpt-admin",
+    });
+  },
+);
+
+test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
   async () => {

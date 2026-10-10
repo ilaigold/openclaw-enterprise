@@ -921,3 +921,23 @@ test(
     }
   },
 );
+
+test(
+  "a database CA Secret shared with the gateway API key gets the same verdict",
+  { skip: helmSkip },
+  () => {
+    // Envoy Gateway would accept the CA certificate entry as a client API key.
+    for (const [secretName, accepted] of [
+      ["occ-db-ca", true],
+      ["occ-private-gateway-key", false],
+    ]) {
+      assertParity({
+        label: secretName,
+        controlPlane: { databaseCa: { secretName } },
+        values: { database: { caSecretName: secretName } },
+        accepted,
+        chartError: /gatewayRouting\.apiKeySecretName must differ from the database CA Secret/,
+      });
+    }
+  },
+);
