@@ -240,7 +240,7 @@ function assertFieldRefusals(profile, input, field, values, message) {
     try {
       assertPreflightFailure(profile, changed, expected);
     } catch (error) {
-      // The test reporter prints the stack, which already holds the old message.
+      // The reporter prints error.stack, captured with the old message, so prefix both.
       const label = `${profile} ${field} = ${JSON.stringify(value)}: `;
       error.message = `${label}${error.message}`;
       error.stack = `${label}${error.stack}`;
@@ -667,8 +667,9 @@ test(
   },
 );
 
-// Preflight refusals of one input field each. A case is [field, refused values, message]: field
-// is a dotted path into a fresh input(), and a string message is the refusal text after it.
+// Preflight refusals of one input field each, on the openclaw profile and baseInput() unless an
+// entry says otherwise. A case is [field, refused values, message]: field is a dotted path into
+// a fresh input(), and a string message is the refusal text after it.
 for (const { name, profile = "openclaw", input = baseInput, cases } of [
   {
     name: "profiles refuse ChatGPT workspace IDs the controller refuses",
@@ -739,7 +740,7 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
       [
         "controlPlane.databaseCidrs",
         [["999.999.999.999/32"]],
-        /controlPlane.databaseCidrs\[0\] must be an IPv4 \/32 CIDR/,
+        /controlPlane\.databaseCidrs\[0\] must be an IPv4 \/32 CIDR/,
       ],
       [
         "codex.managedServiceAccounts",
@@ -750,7 +751,7 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
             providerCidr: "999.999.999.999/32",
           },
         ],
-        /codex.managedServiceAccounts.providerCidr must be an IPv4 \/32 CIDR/,
+        /codex\.managedServiceAccounts\.providerCidr must be an IPv4 \/32 CIDR/,
       ],
     ],
   },
@@ -759,8 +760,8 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     profile: "codex",
     input: codexInput,
     cases: [
-      ["presets.files", ["presets/custom.json", [""], [42]], /presets.files/],
-      ["presets.unknown", [true], /presets.unknown/],
+      ["presets.files", ["presets/custom.json", [""], [42]], /presets\.files/],
+      ["presets.unknown", [true], /presets\.unknown/],
     ],
   },
 ]) {
@@ -874,7 +875,7 @@ test("preflight rejects inputs that the selected profile does not consume", () =
     codexInput(),
     "repository",
     [{ enabled: false, backendId: "github-primary" }],
-    /repository fields other than enabled are only consumed/,
+    "fields other than enabled are only consumed",
   );
 });
 
