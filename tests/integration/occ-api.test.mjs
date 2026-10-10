@@ -2906,6 +2906,17 @@ test("a refused deployment's status names its cause and remedy without naming pr
     REPOSITORY_REVISION_STOPPED:
       "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
     REPOSITORY_REVISION_SUPERSEDED: "Deployment was superseded by a newer revision.",
+    // Finding 1045: repository credential refusals name cause and remedy, never the repository.
+    REPOSITORY_RUNTIME_UNSUPPORTED:
+      "The Installation's Compute Driver can no longer deliver repository credentials to this revision. Repository access needs an embedded OpenClaw or dedicated Codex runtime with no Sandbox Driver, on a Compute Driver configured for repository credentials. Ask an admin to restore that setup, or remove the Agent's repository access, then deploy again.",
+    REPOSITORY_BINDING_UNAVAILABLE:
+      "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an admin to approve the repository again, then deploy again.",
+    REPOSITORY_BINDING_CHANGED:
+      "The approval behind a repository this revision binds changed since admission, for example its access level or the grant it uses. Deploy again to admit a revision with the current approval.",
+    REPOSITORY_DRIVER_MISMATCH:
+      "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again to admit a revision for the selected Driver; if the Installation has none, remove the Agent's repository access or ask an admin to select one first.",
+    REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED:
+      "This revision's repository credential window, which starts when the revision is admitted, has ended. Deploy again to admit a revision with a fresh window.",
     DEPENDENCY_UNAVAILABLE:
       "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
     LEASE_EXPIRED:

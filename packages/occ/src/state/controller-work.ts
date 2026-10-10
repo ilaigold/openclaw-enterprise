@@ -533,6 +533,18 @@ function deploymentErrorMessage(code: string): string {
       return "Deployment was superseded by a newer revision.";
     case "REPOSITORY_REVISION_STOPPED":
       return "Deployment ended because the Agent was stopped or its Namespace is no longer ready.";
+    // Repository credential refusals (finding 1045). Like the refusals below, the status never
+    // names a repository, grant or Driver.
+    case "REPOSITORY_RUNTIME_UNSUPPORTED":
+      return "The Installation's Compute Driver can no longer deliver repository credentials to this revision. Repository access needs an embedded OpenClaw or dedicated Codex runtime with no Sandbox Driver, on a Compute Driver configured for repository credentials. Ask an admin to restore that setup, or remove the Agent's repository access, then deploy again.";
+    case "REPOSITORY_BINDING_UNAVAILABLE":
+      return "A repository this revision binds, or its access level, is no longer approved for the Agent's Namespace. Choose approved repository access on the Agent, or ask an admin to approve the repository again, then deploy again.";
+    case "REPOSITORY_BINDING_CHANGED":
+      return "The approval behind a repository this revision binds changed since admission, for example its access level or the grant it uses. Deploy again to admit a revision with the current approval.";
+    case "REPOSITORY_DRIVER_MISMATCH":
+      return "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again to admit a revision for the selected Driver; if the Installation has none, remove the Agent's repository access or ask an admin to select one first.";
+    case "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED":
+      return "This revision's repository credential window, which starts when the revision is admitted, has ended. Deploy again to admit a revision with a fresh window.";
     // Refusals the worker decides again on every pass (finding 1039). The status never names
     // the principal or the resource the decision was about.
     case "AUTHORIZATION_DENIED":
