@@ -250,8 +250,8 @@ Pickers switch references; rotating shared Secret values is separate.
 history reads: workspace contents belong to the live Agent. Without an active
 revision, the Agent gets an unavailable explanation without file requests.
 
-The editor GETs each supported filename. Textareas normalize CRLF to LF, so the
-baseline is the textarea value: an untouched CRLF file stays clean, and a read
+The editor GETs each supported filename. Textareas normalize line endings to LF,
+so the baseline is the textarea value: an untouched CRLF file stays clean, and a read
 never rewrites it. After a successful load, only an edit enables Save. A
 successful response reauthorizes file access before restoring retained text,
 including empty edits. Drafts keep their original baseline; Reload replaces them
