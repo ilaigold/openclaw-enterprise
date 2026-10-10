@@ -11,6 +11,26 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-10: The gateway API key Secret cannot hold the ChatGPT admin key
+
+**What breaks.** Helm refuses `gatewayRouting.apiKeySecretName` equal to
+`backend.chatgpt.secretName`: `gatewayRouting.apiKeySecretName must differ from
+the ChatGPT Backend Secret`. Envoy Gateway accepts every entry of the gateway
+API key Secret as a client key, so a shared Secret made the ChatGPT workspace
+admin key a valid `x-api-key` on the Agent Gateway listener and put it in
+Envoy's configuration. Such an Installation was never safe to run.
+
+**Who is affected.** Installations with the ChatGPT Backend enabled (profile:
+`codex.managedServiceAccounts`) that name one Secret for both. The defaults
+differ.
+
+**How to tell.** `helm upgrade` fails with that message.
+
+**Steps.** Create a dedicated Secret with only the `occ` entry, copied from the
+shared Secret, point `gatewayRouting.apiKeySecretName` (profile:
+`controlPlane.gatewayApiKeySecretName`) at it, and upgrade. Then rotate the
+ChatGPT admin key. _untested_
+
 ## 2026-10-10: OpenShell Codex Agents need a new deployment
 
 **What breaks.** A controller-only upgrade does not repair OpenShell dedicated

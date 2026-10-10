@@ -487,6 +487,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (eq $routing.apiKeySecretName .Values.installation.secretName) (eq $routing.apiKeySecretName .Values.database.secretName) (eq $routing.apiKeySecretName .Values.auth.secretName) -}}
 {{- fail "gatewayRouting.apiKeySecretName must use a dedicated Secret" -}}
 {{- end -}}
+{{- /* Envoy Gateway's apiKeyAuth accepts every entry of this Secret as a client key, so sharing it would make the ChatGPT admin key a valid x-api-key. */ -}}
+{{- if and .Values.backend.chatgpt.enabled (eq $routing.apiKeySecretName .Values.backend.chatgpt.secretName) -}}{{- fail "gatewayRouting.apiKeySecretName must differ from the ChatGPT Backend Secret" -}}{{- end -}}
 {{- if eq $routing.apiKeySecretName $tlsSecretName -}}{{- fail "gatewayRouting.apiKeySecretName must differ from the Gateway TLS Secret" -}}{{- end -}}
 {{- if or (eq $tlsSecretName .Values.installation.secretName) (eq $tlsSecretName .Values.database.secretName) (eq $tlsSecretName .Values.auth.secretName) -}}
 {{- fail "gatewayRouting.tlsSecretName must differ from installation, database, and auth Secrets" -}}

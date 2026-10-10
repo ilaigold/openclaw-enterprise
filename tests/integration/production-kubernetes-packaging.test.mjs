@@ -3429,6 +3429,32 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
 });
 
 test(
+  "the chart refuses a gateway API key Secret that holds the ChatGPT admin key",
+  tooling,
+  async () => {
+    // Envoy Gateway's apiKeyAuth accepts every entry of the gateway API key Secret as a
+    // client key, so a shared Secret would make the ChatGPT admin key a valid x-api-key.
+    const message = /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/;
+    for (const shared of [
+      { "gatewayRouting.apiKeySecretName": "occ-chatgpt-admin" },
+      { "backend.chatgpt.secretName": "occ-gateway-api-key" },
+    ]) {
+      await assert.rejects(
+        render({ ...gatewayRoutingValues, ...chatgptValues, ...shared }),
+        ({ code, stderr }) => code !== 0 && message.test(stderr),
+        JSON.stringify(shared),
+      );
+    }
+    // Without the ChatGPT Backend the chart does not reserve that name.
+    await render({
+      ...gatewayRoutingValues,
+      "gatewayRouting.apiKeySecretName": "occ-chatgpt-admin",
+    });
+    await render({ ...gatewayRoutingValues, ...chatgptValues });
+  },
+);
+
+test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
   async () => {
