@@ -122,9 +122,11 @@ CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o 
 ```
 
 The Configuration keeps `"sandbox": "read-only"`, but each deployed revision
-freezes `"sandbox": "danger-full-access"`. The OpenShell Sandbox Driver
-overrides this value for every dedicated Codex revision so that Codex's own
-sandbox does not run inside OpenShell's; OpenShell is the containment boundary.
+freezes `"sandbox": "danger-full-access"` and `"approvalsReviewer": "user"`. The
+OpenShell Sandbox Driver overrides these values for every dedicated Codex
+revision so that Codex's own sandbox does not run inside OpenShell's; OpenShell
+is the containment boundary. Codex's sandbox cannot start there, so keep
+`tools.exec.mode` unset or `full`: other modes make every shell command fail.
 See [OpenShell Sandbox configuration](../../reference/drivers/openshell-sandbox.md#configuration).
 
 Create the Agent with the source as its Harness authentication:
