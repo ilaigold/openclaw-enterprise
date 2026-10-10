@@ -131,7 +131,7 @@ it cannot replace the chart's generated CA bundle in automatic mode.
 Root and leaf certificate outputs must use different Secrets, separate from
 Installation, database, auth, provider, and service-key Secrets. An external
 CA trust bundle must also remain separate from those credentials and the leaf
-TLS Secret.
+TLS Secret; it may share a Secret with the database and repository CA settings.
 
 For custom DNS, set the same `gatewayRouting.hostname` in Helm and Compute and
 make it resolve to the Envoy Service. Use a lowercase DNS hostname without a port
