@@ -37,6 +37,11 @@ every running Agent. The new revision uses the Agent's current Configuration
 draft. If commands still fail, check `tools.exec`
 ([OpenShell credential sources](openshell-credential-sources.md)). _untested_
 
+Deploying again also picks up the restart policy from #2084 (`db3c97bae`), for
+every Harness: OpenShell restarts a Harness that exits. A Sandbox created earlier
+keeps its old policy, which OpenShell cannot change in place, so its Harness
+stays down after an exit until the Agent is deployed again.
+
 ## 2026-10-10: Gateway listener settings are checked before deployment
 
 **What breaks.** Provisioning and deployment answer `409` for a `gateway.bind`
