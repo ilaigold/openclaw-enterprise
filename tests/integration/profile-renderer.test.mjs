@@ -616,6 +616,24 @@ test(
   },
 );
 
+// The Secrets a ChatGPT admin or repository Secret may not reuse on the codex profile: the
+// chart's own, the generated Gateway TLS and root CA, the gateway API key and the ChatGPT admin
+// Secret, in managedCodexInput's names.
+const credentialSecretNames = [
+  "occ-installation-startup",
+  "occ-database",
+  "occ-auth",
+  ...generatedGatewaySecrets("oce").map(({ name }) => name),
+  "occ-private-gateway-key",
+  "occ-chatgpt-admin",
+];
+const repositorySecretKeys = [
+  "serviceConfigSecretName",
+  "appKeySecretName",
+  "tlsSecretName",
+  "publicCaSecretName",
+];
+
 function withGitHubSignIn(input, github) {
   const {
     agentNativeAdminDomain: _domain,
@@ -667,6 +685,103 @@ test(
   },
 );
 
+test(
+  "preflight refuses ChatGPT admin and repository Secret collisions, as Helm does",
+  { skip: helmSkip },
+  () => {
+    const input = managedCodexInput({ repository: repositoryConfiguration() });
+    const accepted = render("codex", input);
+    assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+    helmTemplate(accepted);
+    const [tls, root] = generatedGatewaySecrets("oce").map(({ name }) => name);
+    // [input field, name, chart values, chart refusal, preflight refusal]: the cases bughunt probe R2 found
+    // that only Helm refused, and the admin Secret shared with the gateway API key, which
+    // neither refused (finding 1044).
+    for (const [field, name, chartValues, refusal, preflight = "must name a dedicated Secret"] of [
+      [
+        "codex.managedServiceAccounts.adminSecretName",
+        "occ-private-gateway-key",
+        { backend: { chatgpt: { secretName: "occ-private-gateway-key" } } },
+        /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/,
+      ],
+      [
+        "controlPlane.gatewayApiKeySecretName",
+        "occ-chatgpt-admin",
+        { gatewayRouting: { apiKeySecretName: "occ-chatgpt-admin" } },
+        /gatewayRouting\.apiKeySecretName must differ from the ChatGPT Backend Secret/,
+        // Preflight names the ChatGPT admin Secret, which it checks second.
+        /codex\.managedServiceAccounts\.adminSecretName must name a dedicated Secret; occ-chatgpt-admin is also controlPlane\.gatewayApiKeySecretName\./,
+      ],
+      ...[
+        [tls, /gatewayRouting\.tlsSecretName must differ from the ChatGPT Backend Secret/],
+        [root, /generated gatewayRouting root CA Secret must differ from the ChatGPT Backend/],
+        ["occ-database", /backend\.chatgpt admin credentials must use a dedicated Secret/],
+      ].map(([secretName, refusal]) => [
+        "codex.managedServiceAccounts.adminSecretName",
+        secretName,
+        { backend: { chatgpt: { secretName } } },
+        refusal,
+      ]),
+      ...[
+        ["appKeySecretName", tls, "gatewayTls"],
+        ["appKeySecretName", root, "gatewayRoot"],
+        ["appKeySecretName", "occ-database", "database"],
+        ["appKeySecretName", "occ-private-gateway-key", "gatewayApiKey"],
+        ["tlsSecretName", "occ-chatgpt-admin", "chatgpt"],
+        ["tlsSecretName", "occ-repository-app-key", "appKeySecretName"],
+      ].map(([key, secretName, other]) => [
+        `repository.${key}`,
+        secretName,
+        { repositoryCredentials: { [key]: secretName } },
+        new RegExp(
+          `repositoryCredentials\\.${key} must use a dedicated Secret distinct from ${other}`,
+        ),
+      ]),
+    ]) {
+      assertFieldRefusals("codex", input, field, [name], preflight);
+      const override = join(accepted.directory, "secret-collision.json");
+      writeFileSync(override, JSON.stringify(chartValues));
+      const error = renderError(() => helmTemplate(accepted, [override]));
+      assert.match(`${error.stdout ?? ""}${error.stderr ?? ""}`, refusal, `${field} = ${name}`);
+    }
+  },
+);
+
+test(
+  "preflight refuses credential Secrets named like the log collector's, as Helm does",
+  { skip: helmSkip },
+  () => {
+    const input = managedCodexInput({ repository: repositoryConfiguration() });
+    input.controlPlane.loggingCollector = { enabled: true };
+    const accepted = render("codex", input);
+    assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
+    // The chart needs an exporter the profile does not set.
+    const exporter = join(accepted.directory, "collector-exporter.json");
+    writeFileSync(
+      exporter,
+      JSON.stringify({ logging: { collector: { exporter: { cidr: "192.0.2.40/32" } } } }),
+    );
+    helmTemplate(accepted, [exporter]);
+    const override = join(accepted.directory, "secret-collision.json");
+    writeFileSync(
+      override,
+      JSON.stringify({ gatewayRouting: { apiKeySecretName: "occ-otel-collector-config" } }),
+    );
+    const error = renderError(() => helmTemplate(accepted, [exporter, override]));
+    assert.match(
+      `${error.stdout ?? ""}${error.stderr ?? ""}`,
+      /logging\.collector Secrets must be dedicated and cannot reuse the gateway API key Secret/,
+    );
+    assertFieldRefusals(
+      "codex",
+      input,
+      "controlPlane.gatewayApiKeySecretName",
+      ["occ-otel-collector-config"],
+      "must name a dedicated Secret; the chart's log collector uses occ-otel-collector-config.",
+    );
+  },
+);
+
 // Preflight refusals of one input field each, on the openclaw profile and baseInput() unless an
 // entry says otherwise. A case is [field, refused values, message]: field is a dotted path into
 // a fresh input(), and a string message is the refusal text after it.
@@ -687,6 +802,50 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
         "must be a UUID the controller accepts for a ChatGPT workspace",
       ],
     ],
+  },
+  {
+    name: "preflight refuses ChatGPT admin and repository Secrets that hold other credentials",
+    profile: "codex",
+    input: () => managedCodexInput({ repository: repositoryConfiguration() }),
+    cases: [
+      [
+        "codex.managedServiceAccounts.adminSecretName",
+        credentialSecretNames.filter((name) => name !== "occ-chatgpt-admin"),
+        "must name a dedicated Secret",
+      ],
+      // Each repository Secret is checked against the ChatGPT admin Secret and the repository
+      // Secrets before it, in the chart's order.
+      ...repositorySecretKeys.map((key, index) => [
+        `repository.${key}`,
+        [
+          ...credentialSecretNames,
+          ...repositorySecretKeys.slice(0, index).map((other) => repositoryConfiguration()[other]),
+        ],
+        "must name a dedicated Secret",
+      ]),
+    ],
+  },
+  {
+    name: "preflight refuses credential Secrets named like the log collector's",
+    profile: "codex",
+    input: () => {
+      const input = withGitHubSignIn(
+        managedCodexInput({ repository: repositoryConfiguration() }),
+        {},
+      );
+      input.controlPlane.loggingCollector = { enabled: true };
+      return input;
+    },
+    cases: [
+      "controlPlane.gatewayApiKeySecretName",
+      "controlPlane.github.secretName",
+      "codex.managedServiceAccounts.adminSecretName",
+      ...repositorySecretKeys.map((key) => `repository.${key}`),
+    ].map((field) => [
+      field,
+      ["occ-otel-collector-config", "occ-otel-collector-exporter"],
+      "must name a dedicated Secret; the chart's log collector uses occ-otel-collector-",
+    ]),
   },
   {
     name: "preflight refuses lone surrogates, which Helm cannot parse in values.yaml",

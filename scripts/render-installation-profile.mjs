@@ -1140,6 +1140,12 @@ function validateGatewayApiKeySecret(values, releaseName, namespace, diagnostics
       `controlPlane.gatewayApiKeySecretName must name a dedicated Secret; the chart generates ${name} for the ${role}.`,
     );
   }
+  // Envoy Gateway would accept the CA certificate entry as a client key too.
+  if (name !== undefined && name === values.database.caSecretName) {
+    diagnostics.errors.push(
+      `controlPlane.gatewayApiKeySecretName must name a dedicated Secret; ${name} is also controlPlane.databaseCa.secretName.`,
+    );
+  }
 }
 function signInSecretsDedicated(values, diagnostics) {
   const repository = values.repositoryCredentials;
@@ -1167,6 +1173,77 @@ function signInSecretsDedicated(values, diagnostics) {
       );
     }
     taken.push(secretName);
+  }
+}
+// The chart's dedicated-Secret rules for the ChatGPT admin Secret (backend.chatgpt) and the
+// repository broker Secrets, in the chart's order: each must differ from the chart Secrets,
+// the gateway API key Secret, the Gateway Secrets the chart generates, and the Secrets checked
+// before it. The gateway API key Secret holds client keys Envoy Gateway accepts (finding 1044).
+function credentialSecretsDedicated(values, releaseName, namespace, diagnostics) {
+  const generated = chartGatewaySecretNames(releaseName, namespace);
+  const taken = new Map([
+    ...chartSecretNames.map((name) => [name, `${name} holds other credentials`]),
+    [generated.tls, `the chart generates ${generated.tls} for the Gateway TLS certificate`],
+    [generated.root, `the chart generates ${generated.root} for the Gateway root CA`],
+  ]);
+  const claim = (field, name) => {
+    if (name === undefined) {
+      return;
+    }
+    const holder = taken.get(name);
+    if (holder !== undefined) {
+      diagnostics.errors.push(`${field} must name a dedicated Secret; ${holder}.`);
+      return;
+    }
+    taken.set(name, `${name} is also ${field}`);
+  };
+  // validateGatewayApiKeySecret reports this name's own collisions.
+  const gatewayKey = values.gatewayRouting.apiKeySecretName;
+  if (gatewayKey !== undefined && !taken.has(gatewayKey)) {
+    taken.set(gatewayKey, `${gatewayKey} is also controlPlane.gatewayApiKeySecretName`);
+  }
+  if (values.backend?.chatgpt?.enabled) {
+    claim("codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName);
+  }
+  if (values.repositoryCredentials.enabled) {
+    for (const key of [
+      "serviceConfigSecretName",
+      "appKeySecretName",
+      "tlsSecretName",
+      "publicCaSecretName",
+    ]) {
+      claim(`repository.${key}`, values.repositoryCredentials[key]);
+    }
+  }
+}
+// The chart's log collector reads its own config and exporter Secrets (left at the chart
+// defaults here) and refuses any credential Secret named like either one.
+const chartCollectorSecretNames = ["occ-otel-collector-config", "occ-otel-collector-exporter"];
+function collectorSecretsDedicated(values, diagnostics) {
+  if (!values.logging.collector.enabled) {
+    return;
+  }
+  const repository = values.repositoryCredentials;
+  const fields = [
+    ["controlPlane.gatewayApiKeySecretName", values.gatewayRouting.apiKeySecretName],
+    ...Object.keys(signInSecretDefaults)
+      .filter((name) => values.auth[name] !== undefined)
+      .map((name) => [`controlPlane.${name}.secretName`, values.auth[name].secretName]),
+    ...(values.backend?.chatgpt?.enabled
+      ? [["codex.managedServiceAccounts.adminSecretName", values.backend.chatgpt.secretName]]
+      : []),
+    ...(repository.enabled
+      ? ["serviceConfigSecretName", "appKeySecretName", "tlsSecretName", "publicCaSecretName"].map(
+          (key) => [`repository.${key}`, repository[key]],
+        )
+      : []),
+  ];
+  for (const [field, name] of fields) {
+    if (chartCollectorSecretNames.includes(name)) {
+      diagnostics.errors.push(
+        `${field} must name a dedicated Secret; the chart's log collector uses ${name}.`,
+      );
+    }
   }
 }
 
@@ -1776,6 +1853,8 @@ function buildRendered(profile, parsed, diagnostics) {
 
   validateGatewayApiKeySecret(values, releaseName, namespace, diagnostics);
   signInSecretsDedicated(values, diagnostics);
+  credentialSecretsDedicated(values, releaseName, namespace, diagnostics);
+  collectorSecretsDedicated(values, diagnostics);
   validateDatabaseCaMount(values, diagnostics);
 
   diagnostics.prerequisites.push(
