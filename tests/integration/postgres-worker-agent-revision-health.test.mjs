@@ -299,10 +299,10 @@ function denyDeploy(fixture, owner) {
 
 /**
  * Starts the refused-candidate scenario: an exclusive Agent whose first revision activated and
- * whose replacement's first pass started its runtime. `refuse` decides how later passes end:
- * "revoked" denies `deploy` (the next pass refuses it), "unsupported" is refused by Compute,
- * "held" reports a held model-probe failure, "retried" fails with an ordinary error, and "late"
- * stays unready until the convergence deadline; any other value leaves the refusal to the test.
+ * whose replacement's first pass started its runtime but is not ready. `refuse` decides how later
+ * passes fail: "revoked" denies `deploy` (the next pass refuses it) and "unsupported" is refused
+ * by Compute; the self-failures "held" (a held model-probe failure) and "retried" (an ordinary
+ * error) are not refusals. Any other value, such as "late", only leaves the candidate unready.
  * `stopRevision(revision)` returns undefined to use the counting driver's stop or a promise that
  * replaces it, for example a failing stop. `compute` restarts the worker. `refusing()` false lets
  * Compute accept the candidate again, and `candidateReady()` makes it ready; `startOptions` go to
@@ -420,7 +420,7 @@ function refusedStopWaits(events, candidate) {
 /** Waits until `count` passes could not stop the refused candidate. */
 function waitForRefusedStopWaits(events, candidate, count, timeoutMs) {
   return waitFor(
-    `${count} failed refused stops`,
+    `${count} logged refused-stop waits`,
     async () => (refusedStopWaits(events, candidate).length >= count ? true : undefined),
     timeoutMs,
   );
@@ -480,12 +480,7 @@ for (const { failure, stopFailures = 0, convergenceTimeoutMs, maxAttempts } of [
           startOptions: convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs },
         },
       );
-      await assertWorkEnds(
-        fixture,
-        replacement,
-        "failed_permanent",
-        refusals[failure] ?? selfFailures[failure],
-      );
+      await fixture.work(replacement, "failed_permanent", 30_000);
       assert.equal(stop.failed.length, stopFailures);
       if (convergenceTimeoutMs !== undefined) {
         assert.ok(
@@ -493,6 +488,8 @@ for (const { failure, stopFailures = 0, convergenceTimeoutMs, maxAttempts } of [
           "the work outlasted the deadline",
         );
       }
+      const result = await fixture.workResult(replacement);
+      assert.equal(result.rows[0].reason_code, refusals[failure] ?? selfFailures[failure]);
       // A thrown pass forgets the sweep record, so the retry repeats the idempotent stop. A
       // refusal whose stop failed retries only that stop, without sweeping again (finding 1034).
       const predecessorStops =
@@ -1112,8 +1109,6 @@ for (const refuse of ["revoked", "unsupported"]) {
   revisionTest(
     `a ${refuse} candidate whose refusal lifts during its wait ${refuse === "revoked" ? "deploys" : "keeps its refusal"}`,
     async (fixture) => {
-      // A revoked candidate's stop never succeeds, so a pass denied just before the grant
-      // cannot publish its refusal.
       const stop = failingStop();
       let lifted = false;
       let scenario;
@@ -1139,6 +1134,8 @@ for (const refuse of ["revoked", "unsupported"]) {
       const { owner, replacement, driver } = scenario;
       await stop.waitForFailures(2, 30_000);
       lifted = true;
+      // Only the unsupported candidate's stop succeeds. A revoked candidate's never does, so a
+      // pass denied just before the grant cannot publish its refusal.
       if (refuse === "unsupported") {
         stop.succeed();
       }
