@@ -263,7 +263,7 @@ test(
       await assertConsoleSignIn(app, callback, member.id);
     });
     await t.test(
-      "guarded and recovery-only sign-in preserve a normalized recovery account and malformed denial audits",
+      "guarded and recovery-only expose unsupported stored email and preserve password and denial behavior",
       async () => {
         await app.close();
         app = undefined;
@@ -284,6 +284,10 @@ test(
           recoveryOnly(githubUpgradeSettings(admin.id)),
         ]) {
           app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
+          const sessionsBefore = await pool.query(
+            "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
+            [admin.id],
+          );
           const accepted = await passwordSignIn(
             app,
             origin,
@@ -291,8 +295,22 @@ test(
             address(),
           );
           assert.equal(accepted.statusCode, 200, accepted.body);
-          await assertSessionUser(app, accepted, admin.id);
           const cookie = cookieHeaderFromSetCookie(accepted.headers["set-cookie"]);
+          assert.ok(cookie, "the guarded credential endpoint issued a session cookie");
+          const sessionsAfter = await pool.query(
+            "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
+            [admin.id],
+          );
+          assert.equal(sessionsAfter.rows[0].count, sessionsBefore.rows[0].count + 1);
+          // Credential admission is not usable Console access: the existing session
+          // response contract rejects this unsupported stored email spelling.
+          const unsupportedSession = await app.inject({
+            url: "/api/auth/session",
+            headers: { cookie },
+          });
+          assert.equal(unsupportedSession.statusCode, 500, unsupportedSession.body);
+          assert.equal(unsupportedSession.json().error.code, "INTERNAL_ERROR");
+          assert.equal(unsupportedSession.json().data, undefined);
           const before = await denials();
           for (const email of [legacyEmail, "recovery-nul\u0000@example.test"]) {
             const refused = await app.inject({
@@ -309,6 +327,27 @@ test(
           assert.equal(await denials(), before + 2);
           await app.close();
           app = undefined;
+          // This direct SQL change is fixture preparation, not a supported account
+          // repair operation. Prove the identical password on a supported address.
+          await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [
+            adminEmail,
+            admin.id,
+          ]);
+          app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
+          const ordinary = await passwordSignIn(
+            app,
+            origin,
+            { email: adminEmail, password: legacyPassword },
+            address(),
+          );
+          assert.equal(ordinary.statusCode, 200, ordinary.body);
+          await assertSessionUser(app, ordinary, admin.id);
+          await app.close();
+          app = undefined;
+          await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [
+            storedEmail,
+            admin.id,
+          ]);
         }
       },
     );

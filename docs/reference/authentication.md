@@ -124,10 +124,10 @@ through `Set-Cookie`.
 Sign-in rejects NUL or unpaired-surrogate emails with `400 INVALID_REQUEST`
 before account or known-device State reads. Both profiles retain denial audits
 and budget accounting, including recovery-only and counted `503` audit failures.
-Admission-limited attempts remain `429`. Passwords are not checked for these
-characters. Password-only sign-in rejects stored U+FFFD email addresses with
-`400 FORBIDDEN` and no session; literal spelling does not restore access.
-Guarded profiles pass that spelling to normal account, password and recovery checks.
+Limited attempts remain `429`; passwords are unchanged. Stored U+FFFD email is
+unsupported: password-only returns `400 FORBIDDEN` without a session. Guarded
+credential checks can create a session and cookie, but HTTP session inspection
+returns `500 INTERNAL_ERROR`, not usable-session proof.
 
 In both profiles, after 10 failed sign-ins per minute per email, or 20
 per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),
