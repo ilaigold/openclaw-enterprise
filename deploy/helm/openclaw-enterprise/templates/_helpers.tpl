@@ -360,9 +360,22 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $execution.apiCidrs) (not $execution.kubeconfigKey) -}}
 {{- fail "executionCluster requires explicit API CIDRs and kubeconfig key" -}}
 {{- end -}}
+{{- $platform := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName "gateway API key" .Values.gatewayRouting.apiKeySecretName -}}
+{{- if .Values.backend.chatgpt.enabled -}}{{- $_ := set $platform "ChatGPT Backend" .Values.backend.chatgpt.secretName -}}{{- end -}}
+{{- range $provider := list "github" "google" "oidc" -}}
+{{- $signIn := index $.Values.auth $provider -}}
+{{- if and $signIn $signIn.enabled -}}{{- $_ := set $platform (printf "auth.%s sign-in" $provider) $signIn.secretName -}}{{- end -}}
+{{- end -}}
+{{- if .Values.gatewayRouting.enabled -}}
+{{- $_ := set $platform "Gateway TLS" (include "openclaw.gatewayRouting.tlsSecretName" .) -}}
+{{- $_ := set $platform "generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .) -}}
+{{- if .Values.gatewayRouting.caSecretName -}}{{- $_ := set $platform "Gateway CA" .Values.gatewayRouting.caSecretName -}}{{- end -}}
+{{- end -}}
 {{- range $name := list $execution.apiKubeconfigSecretName $execution.workerKubeconfigSecretName -}}
-{{- if has $name (list $.Values.installation.secretName $.Values.database.secretName $.Values.auth.secretName $.Values.gatewayRouting.apiKeySecretName) -}}
-{{- fail "executionCluster kubeconfigs require dedicated Secrets distinct from platform credentials" -}}
+{{- range $role, $secret := $platform -}}
+{{- if and $secret (eq (toString $name) (toString $secret)) -}}
+{{- fail (printf "executionCluster kubeconfigs require dedicated Secrets distinct from platform credentials; %s is also the %s Secret" $name $role) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -506,6 +519,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "gatewayRouting.caSecretName must differ from leaf TLS, API key, installation, database, and auth Secrets" -}}
 {{- end -}}
 {{- if and .Values.backend.chatgpt.enabled (eq $routing.caSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "gatewayRouting.caSecretName must differ from the ChatGPT Backend Secret" -}}{{- end -}}
+{{- end -}}
+{{- /* cert-manager writes the generated Gateway TLS and root CA Secrets and would overwrite a sign-in Secret sharing either name; the external Gateway CA Secret gets the same dedicated-Secret rule as the repository Secrets (finding 1046). */ -}}
+{{- $gatewaySecrets := dict "Gateway TLS" $tlsSecretName "generated Gateway root CA" $rootSecretName -}}
+{{- if $routing.caSecretName -}}{{- $_ := set $gatewaySecrets "Gateway CA" $routing.caSecretName -}}{{- end -}}
+{{- range $provider := list "github" "google" "oidc" -}}
+{{- $signIn := index $.Values.auth $provider -}}
+{{- if and $signIn $signIn.enabled -}}
+{{- range $role, $secret := $gatewaySecrets -}}
+{{- if eq (toString $signIn.secretName) (toString $secret) -}}{{- fail (printf "auth.%s credentials must use a dedicated Secret distinct from the %s Secret" $provider $role) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.tenantGatewayPort))) (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
 {{- fail "gatewayRouting.tenantGatewayPort must be an integer TCP port from 1 to 65535" -}}

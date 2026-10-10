@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -593,6 +594,8 @@ test(
       tokenUrl: "https://sso.example.com/token",
       jwksUrl: "https://sso.example.com/keys",
     };
+    // The chart's openclaw.gatewayRouting.rootSecretName for release oce in openclaw-system.
+    const gatewayRootSecret = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
     // [label, controlPlane providers, accepted]. The chart compares each enabled provider's
     // Secret, default or explicit, with the platform Secrets and each provider before it.
     const cases = [
@@ -609,6 +612,9 @@ test(
       // GitHub is disabled, so Google may use GitHub's default name.
       ["google alone", { github: undefined, google: { secretName: "occ-github-login" } }, true],
       ["gateway API key", { github: { secretName: "occ-private-gateway-key" } }, false],
+      // cert-manager writes the Gateway Secrets the chart generates (finding 1046).
+      ["generated Gateway TLS", { github: { secretName: "oce-agent-gateways-tls" } }, false],
+      ["generated Gateway root CA", { google: { secretName: gatewayRootSecret } }, false],
       ["installation", { github: { secretName: "occ-installation-startup" } }, false],
       ["database", { google: { secretName: "occ-database" } }, false],
       ["auth", { oidc: { ...endpoints, secretName: "occ-auth" } }, false],
@@ -937,6 +943,29 @@ test(
         values: { database: { caSecretName: secretName } },
         accepted,
         chartError: /gatewayRouting\.apiKeySecretName must differ from the database CA Secret/,
+      });
+    }
+  },
+);
+
+test(
+  "log collector exporter CIDRs get the same verdict from preflight and the chart",
+  { skip: helmSkip },
+  () => {
+    for (const [cidr, accepted] of [
+      ["192.0.2.40/32", true],
+      ["192.0.2.0/24", false],
+      ["192.0.2.40", false],
+      ["010.0.2.40/32", false],
+      ["192.0.2.256/32", false],
+    ]) {
+      assertParity({
+        label: cidr,
+        controlPlane: { loggingCollector: { enabled: true, exporter: { cidr } } },
+        values: { logging: { collector: { enabled: true, exporter: { cidr } } } },
+        accepted,
+        chartError:
+          /logging\.collector\.exporter\.cidr must identify exactly one approved IPv4 exporter or proxy host with \/32/,
       });
     }
   },

@@ -752,22 +752,16 @@ test(
   { skip: helmSkip },
   () => {
     const input = managedCodexInput({ repository: repositoryConfiguration() });
-    input.controlPlane.loggingCollector = { enabled: true };
+    input.controlPlane.loggingCollector = { enabled: true, exporter: { cidr: "192.0.2.40/32" } };
     const accepted = render("codex", input);
     assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
-    // The chart needs an exporter the profile does not set.
-    const exporter = join(accepted.directory, "collector-exporter.json");
-    writeFileSync(
-      exporter,
-      JSON.stringify({ logging: { collector: { exporter: { cidr: "192.0.2.40/32" } } } }),
-    );
-    helmTemplate(accepted, [exporter]);
+    helmTemplate(accepted);
     const override = join(accepted.directory, "secret-collision.json");
     writeFileSync(
       override,
       JSON.stringify({ gatewayRouting: { apiKeySecretName: "occ-otel-collector-config" } }),
     );
-    const error = renderError(() => helmTemplate(accepted, [exporter, override]));
+    const error = renderError(() => helmTemplate(accepted, [override]));
     assert.match(
       `${error.stdout ?? ""}${error.stderr ?? ""}`,
       /logging\.collector Secrets must be dedicated and cannot reuse the gateway API key Secret/,
@@ -778,6 +772,55 @@ test(
       "controlPlane.gatewayApiKeySecretName",
       ["occ-otel-collector-config"],
       "must name a dedicated Secret; the chart's log collector uses occ-otel-collector-config.",
+    );
+  },
+);
+
+// Finding 1047: the chart refuses an enabled log collector without an exporter, so the profile
+// takes one and preflight refuses an enabled collector that lacks it.
+test(
+  "profile log collector exporters render values Helm accepts, and preflight requires one",
+  { skip: helmSkip },
+  () => {
+    const egress = (output, extra) => {
+      const manifests = helmTemplate(output, extra);
+      const policy = manifests
+        .split(/^---$/m)
+        .filter((document) => document.includes("name: openclaw-enterprise-collector-egress"))
+        .map((document) => loadYaml(document))
+        .find((object) => object.metadata.name === "openclaw-enterprise-collector-egress");
+      // loadYaml builds client-node classes; compare plain data.
+      return JSON.parse(JSON.stringify(policy.spec.egress.at(-1)));
+    };
+    for (const [exporter, peer, port] of [
+      [{ cidr: "192.0.2.40/32" }, { ipBlock: { cidr: "192.0.2.40/32" } }, 443],
+      [
+        {
+          namespaceLabels: { name: "observability" },
+          podLabels: { app: "otel-gateway" },
+          port: 4318,
+        },
+        {
+          namespaceSelector: { matchLabels: { name: "observability" } },
+          podSelector: { matchLabels: { app: "otel-gateway" } },
+        },
+        4318,
+      ],
+    ]) {
+      const input = baseInput();
+      input.controlPlane.loggingCollector = { enabled: true, exporter };
+      const output = render("openclaw", input);
+      assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+      const rule = egress(output);
+      assert.deepEqual(rule.to, [peer], JSON.stringify(exporter));
+      assert.deepEqual(rule.ports, [{ protocol: "TCP", port }], JSON.stringify(exporter));
+    }
+    const input = baseInput();
+    input.controlPlane.loggingCollector = { enabled: true };
+    assertPreflightFailure(
+      "openclaw",
+      input,
+      /controlPlane\.loggingCollector\.exporter is required with enabled: true; set cidr to the one approved exporter or proxy IPv4 host as a \/32, or namespaceLabels and podLabels/,
     );
   },
 );
@@ -833,7 +876,10 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
         managedCodexInput({ repository: repositoryConfiguration() }),
         {},
       );
-      input.controlPlane.loggingCollector = { enabled: true };
+      input.controlPlane.loggingCollector = {
+        enabled: true,
+        exporter: { cidr: "192.0.2.40/32" },
+      };
       return input;
     },
     cases: [
@@ -846,6 +892,87 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
       ["occ-otel-collector-config", "occ-otel-collector-exporter"],
       "must name a dedicated Secret; the chart's log collector uses occ-otel-collector-",
     ]),
+  },
+  {
+    // cert-manager writes these two Secrets, so it would overwrite a sign-in Secret sharing one
+    // (finding 1046; the Helm-backed case is in profile-preflight-chart-parity).
+    name: "preflight refuses sign-in Secrets named like the Gateway Secrets the chart generates",
+    input: () => {
+      const input = withGitHubSignIn(baseInput(), {});
+      input.controlPlane.google = {};
+      return input;
+    },
+    cases: ["github", "google"].flatMap((provider) =>
+      generatedGatewaySecrets("oce").map(({ name, role }) => [
+        `controlPlane.${provider}.secretName`,
+        [name],
+        `must name a dedicated Secret; the chart generates ${name} for the ${role}.`,
+      ]),
+    ),
+  },
+  {
+    name: "preflight refuses log collector exporters the chart refuses",
+    input: () => {
+      const input = baseInput();
+      input.controlPlane.loggingCollector = {
+        enabled: true,
+        exporter: { cidr: "192.0.2.40/32" },
+      };
+      return input;
+    },
+    cases: [
+      [
+        "controlPlane.loggingCollector.exporter.cidr",
+        ["192.0.2.0/24", "192.0.2.40", "010.0.2.40/32", "192.0.2.256/32", " 192.0.2.40/32"],
+        "must be one approved exporter or proxy IPv4 host with /32",
+      ],
+      [
+        "controlPlane.loggingCollector.exporter.port",
+        [0, 65536, "443", 44.5],
+        "must be an integer from 1 through 65535 when supplied",
+      ],
+      [
+        "controlPlane.loggingCollector.exporter.namespaceLabels",
+        [{ name: "observability" }],
+        /controlPlane\.loggingCollector\.exporter requires both namespaceLabels and podLabels\./,
+      ],
+      [
+        "controlPlane.loggingCollector.exporter.podLabels",
+        [{ app: "otel-gateway" }],
+        /controlPlane\.loggingCollector\.exporter requires both namespaceLabels and podLabels\./,
+      ],
+      [
+        "controlPlane.loggingCollector.exporter",
+        [{}, { port: 443 }],
+        /controlPlane\.loggingCollector\.exporter requires cidr or namespaceLabels and podLabels\./,
+      ],
+      [
+        "controlPlane.loggingCollector.exporter",
+        [
+          {
+            cidr: "192.0.2.40/32",
+            namespaceLabels: { name: "observability" },
+            podLabels: { app: "otel-gateway" },
+          },
+        ],
+        /controlPlane\.loggingCollector\.exporter requires either cidr or namespaceLabels and podLabels, not both\./,
+      ],
+      [
+        "controlPlane.loggingCollector.exporter",
+        ["192.0.2.40/32", null],
+        /controlPlane\.loggingCollector\.exporter must be an object\./,
+      ],
+      [
+        "controlPlane.loggingCollector.exporter.endpoint",
+        ["https://otel.example.invalid"],
+        "is not supported by installation profiles.",
+      ],
+      [
+        "controlPlane.loggingCollector.enabled",
+        [false],
+        /controlPlane\.loggingCollector\.exporter requires controlPlane\.loggingCollector\.enabled: true\./,
+      ],
+    ],
   },
   {
     name: "preflight refuses lone surrogates, which Helm cannot parse in values.yaml",

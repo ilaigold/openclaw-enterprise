@@ -11,6 +11,22 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-10: Sign-in and execution kubeconfig Secrets must be dedicated
+
+**What breaks.** Helm refuses a sign-in `secretName` equal to a Gateway TLS or
+CA Secret, and an `executionCluster` kubeconfig Secret equal to the ChatGPT
+Backend, a sign-in or a Gateway Secret. Profiles with
+`controlPlane.loggingCollector.enabled` need an `exporter`.
+
+**Who is affected.** Installations sharing those names; the defaults differ.
+
+**How to tell.** `helm upgrade` or the profile renderer names the Secret or the
+missing `exporter`.
+
+**Steps.** Move the credential to a new Secret, point the setting at it, and
+upgrade. Rotate a sign-in client secret that shared a Gateway Secret. Copy your
+`exporter` values into the profile input. _untested_
+
 ## 2026-10-10: The gateway API key Secret must hold only gateway keys
 
 **What breaks.** Helm refuses a `gatewayRouting.apiKeySecretName` equal to

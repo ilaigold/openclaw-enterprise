@@ -1027,7 +1027,7 @@ function buildInput(rawInput, diagnostics) {
   const databaseCa = section(controlPlane, "databaseCa", diagnostics, false);
   closed(databaseCa, "controlPlane.databaseCa", ["secretName", "key", "mountPath"], diagnostics);
   const loggingCollector = section(controlPlane, "loggingCollector", diagnostics, false);
-  closed(loggingCollector, "controlPlane.loggingCollector", ["enabled"], diagnostics);
+  closed(loggingCollector, "controlPlane.loggingCollector", ["enabled", "exporter"], diagnostics);
   const github = section(controlPlane, "github", diagnostics, false);
   closed(
     github,
@@ -1097,7 +1097,8 @@ function buildInput(rawInput, diagnostics) {
 // The chart's dedicated-Secret rule for sign-in credentials (auth.github, auth.google and
 // auth.oidc): each provider's Secret must differ from the installation, database and auth
 // Secrets (left at the chart defaults here), the ChatGPT Backend and gateway API key Secrets,
-// the repository broker Secrets, and the Secret of each provider checked before it.
+// the repository broker Secrets, the Gateway Secrets the chart generates, and the Secret of
+// each provider checked before it.
 const chartSecretNames = ["occ-installation-startup", "occ-database", "occ-auth"];
 const signInSecretDefaults = {
   github: "occ-github-login",
@@ -1147,8 +1148,14 @@ function validateGatewayApiKeySecret(values, releaseName, namespace, diagnostics
     );
   }
 }
-function signInSecretsDedicated(values, diagnostics) {
+function signInSecretsDedicated(values, releaseName, namespace, diagnostics) {
   const repository = values.repositoryCredentials;
+  // cert-manager writes these two, so a sign-in Secret sharing a name would be overwritten.
+  const generated = chartGatewaySecretNames(releaseName, namespace);
+  const generatedRoles = new Map([
+    [generated.tls, "Gateway TLS certificate"],
+    [generated.root, "Gateway root CA"],
+  ]);
   const taken = [
     ...chartSecretNames,
     ...(values.backend?.chatgpt?.enabled ? [values.backend.chatgpt.secretName] : []),
@@ -1167,7 +1174,12 @@ function signInSecretsDedicated(values, diagnostics) {
       continue;
     }
     const secretName = values.auth[name].secretName ?? fallback;
-    if (taken.includes(secretName)) {
+    const role = generatedRoles.get(secretName);
+    if (role !== undefined) {
+      diagnostics.errors.push(
+        `controlPlane.${name}.secretName must name a dedicated Secret; the chart generates ${secretName} for the ${role}.`,
+      );
+    } else if (taken.includes(secretName)) {
       diagnostics.errors.push(
         `controlPlane.${name}.secretName must name a dedicated Secret; ${secretName} holds other credentials.`,
       );
@@ -1245,6 +1257,61 @@ function collectorSecretsDedicated(values, diagnostics) {
       );
     }
   }
+}
+
+// The chart's collector egress (logging.collector.exporter): one approved exporter or proxy
+// IPv4 host as a /32, or paired in-cluster selectors, and an optional TCP port (the chart
+// defaults to 443). The chart refuses an enabled collector without one (finding 1047).
+function collectorExporter(loggingCollector, enabled, diagnostics) {
+  const path = ["controlPlane", "loggingCollector", "exporter"];
+  if (loggingCollector.exporter === undefined) {
+    if (enabled) {
+      diagnostics.errors.push(
+        `${path.join(".")} is required with enabled: true; set cidr to the one approved exporter or proxy IPv4 host as a /32, or namespaceLabels and podLabels for an in-cluster exporter.`,
+      );
+    }
+    return undefined;
+  }
+  const exporter = loggingCollector.exporter;
+  if (typeof exporter !== "object" || exporter === null || Array.isArray(exporter)) {
+    diagnostics.errors.push(`${path.join(".")} must be an object.`);
+    return undefined;
+  }
+  closed(exporter, path.join("."), ["cidr", "port", "namespaceLabels", "podLabels"], diagnostics);
+  if (!enabled) {
+    diagnostics.errors.push(
+      `${path.join(".")} requires controlPlane.loggingCollector.enabled: true.`,
+    );
+  }
+  const rendered = {};
+  const cidr = optionalString(exporter, [...path, "cidr"], diagnostics, {
+    validate: (value) => isIpv4Cidr(value, 32),
+    description: "one approved exporter or proxy IPv4 host with /32, such as 203.0.113.10/32",
+  });
+  const selectors = exporter.namespaceLabels !== undefined || exporter.podLabels !== undefined;
+  if (selectors) {
+    if (exporter.namespaceLabels === undefined || exporter.podLabels === undefined) {
+      diagnostics.errors.push(`${path.join(".")} requires both namespaceLabels and podLabels.`);
+    } else {
+      rendered.namespaceLabels = peerSelector(exporter, [...path, "namespaceLabels"], diagnostics);
+      rendered.podLabels = peerSelector(exporter, [...path, "podLabels"], diagnostics);
+    }
+  }
+  if (cidr !== undefined && selectors) {
+    diagnostics.errors.push(
+      `${path.join(".")} requires either cidr or namespaceLabels and podLabels, not both.`,
+    );
+  } else if (cidr === undefined && !selectors) {
+    diagnostics.errors.push(`${path.join(".")} requires cidr or namespaceLabels and podLabels.`);
+  }
+  if (cidr !== undefined) {
+    rendered.cidr = cidr;
+  }
+  const port = optionalPositiveInteger(exporter, [...path, "port"], diagnostics, { max: 65535 });
+  if (port !== undefined) {
+    rendered.port = port;
+  }
+  return rendered;
 }
 
 function buildRendered(profile, parsed, diagnostics) {
@@ -1400,6 +1467,18 @@ function buildRendered(profile, parsed, diagnostics) {
     },
   );
 
+  const collectorEnabled = asBoolean(
+    loggingCollector,
+    ["controlPlane", "loggingCollector", "enabled"],
+    diagnostics,
+    false,
+  );
+  const collectorExporterValues = collectorExporter(
+    loggingCollector,
+    collectorEnabled,
+    diagnostics,
+  );
+
   const values = {
     images: {
       controller: controllerImage,
@@ -1539,12 +1618,8 @@ function buildRendered(profile, parsed, diagnostics) {
     },
     logging: {
       collector: {
-        enabled: asBoolean(
-          loggingCollector,
-          ["controlPlane", "loggingCollector", "enabled"],
-          diagnostics,
-          false,
-        ),
+        enabled: collectorEnabled,
+        ...(collectorExporterValues === undefined ? {} : { exporter: collectorExporterValues }),
       },
     },
     repositoryCredentials: {
@@ -1852,7 +1927,7 @@ function buildRendered(profile, parsed, diagnostics) {
   }
 
   validateGatewayApiKeySecret(values, releaseName, namespace, diagnostics);
-  signInSecretsDedicated(values, diagnostics);
+  signInSecretsDedicated(values, releaseName, namespace, diagnostics);
   credentialSecretsDedicated(values, releaseName, namespace, diagnostics);
   collectorSecretsDedicated(values, diagnostics);
   validateDatabaseCaMount(values, diagnostics);
