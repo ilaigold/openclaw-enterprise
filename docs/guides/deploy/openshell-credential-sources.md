@@ -126,7 +126,9 @@ freezes `"sandbox": "danger-full-access"` and `"approvalsReviewer": "user"`. The
 OpenShell Sandbox Driver overrides these values for every dedicated Codex
 revision so that Codex's own sandbox does not run inside OpenShell's; OpenShell
 is the containment boundary. Codex's sandbox cannot start there, so keep
-`tools.exec.mode` unset or `full`: other modes make every shell command fail.
+`tools.exec` at its default or `mode: full`: other modes, including those the
+legacy `security` and `ask` fields select, make every shell command fail.
+`approvalPolicy` stays as configured.
 See [OpenShell Sandbox configuration](../../reference/drivers/openshell-sandbox.md#configuration).
 
 Create the Agent with the source as its Harness authentication:

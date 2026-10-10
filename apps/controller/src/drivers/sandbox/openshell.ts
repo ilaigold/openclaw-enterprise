@@ -183,7 +183,8 @@ const OPENSHELL_TEMPORARY = "/tmp";
  * mode without an explicit `user` reviewer, or an explicit model-backed reviewer, on a model
  * it cannot verify for model-backed review (the documented `codex/<model>` Configuration is
  * one). An explicit `user` reviewer keeps the configured sandbox, and approvals still go to a
- * person. OpenClaw `tools.exec` modes other than `full` still force Codex's own sandbox.
+ * person. OpenClaw `tools.exec` settings other than the default or `mode: full` still make
+ * every command fail (Codex's own sandbox, or a refusal).
  * Source: `extensions/codex/src/app-server/config-options.ts` at the `OPENCLAW_COMMIT` in
  * `deploy/runtime/Dockerfile`; recheck when that pin changes.
  */

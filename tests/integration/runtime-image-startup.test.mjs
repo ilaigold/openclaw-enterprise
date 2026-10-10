@@ -1402,7 +1402,8 @@ test(
         modelProvider,
       })),
     );
-    // Without the reviewer pin, the documented shape is the reported failure.
+    // Without the reviewer pin, the documented shape is the reported failure. If this case
+    // resolves to danger-full-access after a pin bump, re-evaluate the pin before dropping it.
     cases.push({
       appServer: { ...documented, sandbox: "danger-full-access" },
       expectedSandbox: "workspace-write",
@@ -1413,10 +1414,16 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const pluginDist = "/app/node_modules/openclaw/dist";
 const configChunk = readdirSync(pluginDist).find((name) => /^config-options-.*\.mjs$/.test(name));
+if (configChunk === undefined) {
+  throw new Error("Bundled Codex config chunk was not found under " + pluginDist);
+}
 const configExports = await import(pathToFileURL(join(pluginDist, configChunk)));
 const createCodexAppServerConfig = Object.values(configExports).find(
   (value) => typeof value === "function" && value.name === "createCodexAppServerConfig",
 );
+if (createCodexAppServerConfig === undefined) {
+  throw new Error("Bundled Codex config export did not expose createCodexAppServerConfig.");
+}
 const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");
 const { resolveCodexAppServerRuntimeOptions } = createCodexAppServerConfig({ resolveProviderIdForAuth });
 const config = {
