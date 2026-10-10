@@ -1970,6 +1970,21 @@ test("every lane whose tests run the Codex sandbox prepares the reviewed Docker 
   );
 });
 
+test("QA workflows pin the Compose launcher's K3s image to the CI default", async () => {
+  // Without the pin, dev-up resolves the +v1.35 channel through update.k3s.io,
+  // so a channel-server outage fails every Compose QA run (finding 1056).
+  const workflows = [
+    [".github/workflows/qa-advisory.yml", (workflow) => workflow.jobs.qa.env],
+    [".github/workflows/full-integration.yml", (workflow) => workflow.jobs["qa-matrix"].env],
+  ];
+  for (const [path, env] of workflows) {
+    const workflow = loadYaml(await readFile(join(repositoryRoot, path), "utf8"));
+    assert.equal(env(workflow)?.OCC_DEVELOPMENT_K3S_IMAGE, defaultK3sImage, path);
+    // Workflow-wide would reach dev-up.test.mjs, which asserts the +v1.35 default.
+    assert.equal(workflow.env?.OCC_DEVELOPMENT_K3S_IMAGE, undefined, path);
+  }
+});
+
 test("prepareFile applies the images packaging Node base default without hiding invalid overrides", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "missing-state.json");

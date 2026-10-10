@@ -57,7 +57,9 @@ const fixtureLanes = new Set([
 // Ordinary k3d lanes pin the K3s node image by digest so cluster creation
 // never depends on k3d's online release-channel lookup (update.k3s.io). Bump
 // it deliberately to a newer v1.35 patch; OPENCLAW_CI_K3S_IMAGE still
-// overrides it with another immutable reference.
+// overrides it with another immutable reference. The QA workflows pass the same
+// image to the Compose launcher as OCC_DEVELOPMENT_K3S_IMAGE (ci-prepare.test.mjs
+// checks they match).
 const defaultK3sImage =
   "docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc";
 const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.mjs";
