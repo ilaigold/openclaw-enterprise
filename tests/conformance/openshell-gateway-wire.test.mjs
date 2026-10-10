@@ -580,6 +580,68 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
   }
 });
 
+test("OpenShell client reads the pinned gateway's Harness restart state from GetSandbox", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  // SandboxStatus fields 6, 9 and 14 as the gateway sets them (finding 1043).
+  const statuses = {
+    "sandbox-restarting": { phase: "SANDBOX_PHASE_STARTING", exit_code: 137, restart_count: 4 },
+    "sandbox-exited-zero": { phase: "SANDBOX_PHASE_STARTING", exit_code: 0, restart_count: 1 },
+    "sandbox-first-start": { phase: "SANDBOX_PHASE_STARTING" },
+    "sandbox-recovered": { phase: "SANDBOX_PHASE_READY", restart_count: 3 },
+  };
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      callback(null, {
+        sandbox: {
+          metadata: { id: "sandbox-id", name: call.request.name, workspace: "tenant-workspace" },
+          status: statuses[call.request.name],
+        },
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const signal = AbortSignal.timeout(2_000);
+  try {
+    const read = async (name) => {
+      const { phase, exitCode, restartCount } = await client.getSandbox(
+        { name, workspace: "tenant-workspace" },
+        signal,
+      );
+      return { phase, exitCode, restartCount };
+    };
+    assert.deepEqual(await read("sandbox-restarting"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: 137,
+      restartCount: 4,
+    });
+    // `exit_code` is a proto3 optional: a clean exit is present as 0, not absent.
+    assert.deepEqual(await read("sandbox-exited-zero"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: 0,
+      restartCount: 1,
+    });
+    assert.deepEqual(await read("sandbox-first-start"), {
+      phase: "SANDBOX_PHASE_STARTING",
+      exitCode: undefined,
+      restartCount: undefined,
+    });
+    assert.deepEqual(await read("sandbox-recovered"), {
+      phase: "SANDBOX_PHASE_READY",
+      exitCode: undefined,
+      restartCount: 3,
+    });
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
 test("OpenShell client reports a refused CreateSandbox request_id from its ErrorInfo reason", async () => {
   const proto = await loader.load(
     join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),

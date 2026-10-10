@@ -899,7 +899,7 @@
             "properties": {
               "harness": {
                 "additionalProperties": false,
-                "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it.",
+                "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
                 "properties": {
                   "code": {
                     "anyOf": [
@@ -908,8 +908,21 @@
                       { "const": "SANDBOX_STOPPED", "type": "string" },
                       { "const": "SANDBOX_FAILED", "type": "string" },
                       { "const": "HARNESS_EXITED", "type": "string" },
+                      { "const": "HARNESS_RESTARTING", "type": "string" },
                       { "const": "UNAVAILABLE", "type": "string" }
                     ]
+                  },
+                  "exitCode": {
+                    "description": "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+                    "maximum": 2147483647,
+                    "minimum": -2147483648,
+                    "type": "integer"
+                  },
+                  "restarts": {
+                    "description": "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                    "maximum": 4294967295,
+                    "minimum": 1,
+                    "type": "integer"
                   },
                   "state": {
                     "anyOf": [
@@ -17993,7 +18006,7 @@
                       "properties": {
                         "harness": {
                           "additionalProperties": false,
-                          "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it.",
+                          "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
                           "properties": {
                             "code": {
                               "anyOf": [
@@ -18002,8 +18015,21 @@
                                 { "const": "SANDBOX_STOPPED", "type": "string" },
                                 { "const": "SANDBOX_FAILED", "type": "string" },
                                 { "const": "HARNESS_EXITED", "type": "string" },
+                                { "const": "HARNESS_RESTARTING", "type": "string" },
                                 { "const": "UNAVAILABLE", "type": "string" }
                               ]
+                            },
+                            "exitCode": {
+                              "description": "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+                              "maximum": 2147483647,
+                              "minimum": -2147483648,
+                              "type": "integer"
+                            },
+                            "restarts": {
+                              "description": "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                              "maximum": 4294967295,
+                              "minimum": 1,
+                              "type": "integer"
                             },
                             "state": {
                               "anyOf": [

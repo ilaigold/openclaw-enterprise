@@ -46,8 +46,12 @@ revision's Harness Sandbox, without contacting the Harness. It answers `running`
 OCC adds it to the runtime description and diagnostics, and reports a missing or
 deleting Sandbox as lost only for the running Agent's active revision. Nothing
 recovers a lost Sandbox until the Agent is deployed again. The OpenShell Driver
-asks the gateway to restart an exited Harness (`restart_policy: ALWAYS`); the
-runtime reads `starting` meanwhile. Only Sandboxes created before that policy
+asks the gateway to restart an exited Harness (`restart_policy: ALWAYS`); while
+the gateway restarts it, the observation is `starting` with code
+`HARNESS_RESTARTING`, the last `exitCode` and the gateway's `restarts` number
+(GetSandbox `exit_code` and `restart_count`, set together only during a policy
+restart). A first start is plain `starting`. Diagnostics report a restarting
+Harness as a failed `sandbox` check. Only Sandboxes created before that policy
 existed report `HARNESS_EXITED`.
 
 ### Containment facets

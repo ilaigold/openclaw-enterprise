@@ -1124,10 +1124,22 @@ export type SandboxHarnessStatus =
 export type SandboxHarnessLostCode =
   "SANDBOX_MISSING" | "SANDBOX_DELETING" | "SANDBOX_STOPPED" | "SANDBOX_FAILED" | "HARNESS_EXITED";
 
+/**
+ * The provider restarts an exited Harness process itself: `exitCode` is the last exit and
+ * `restarts` its restart number in the current crash loop (1 for a first restart).
+ */
+export interface SandboxHarnessRestart {
+  readonly state: "starting";
+  readonly code: "HARNESS_RESTARTING";
+  readonly exitCode: number;
+  readonly restarts: number;
+}
+
 /** The provider's own lifecycle record of a revision's Harness Sandbox. */
 export type SandboxHarnessObservation =
   | { readonly state: "running" }
   | { readonly state: "starting" }
+  | SandboxHarnessRestart
   | { readonly state: "unknown" }
   | { readonly state: "lost"; readonly code: SandboxHarnessLostCode };
 
@@ -1482,6 +1494,8 @@ export interface SandboxDriver extends Driver {
    * The provider's lifecycle record of the dedicated revision's Harness Sandbox, read-only.
    * `lost` means the Sandbox is not serving the revision and OCC will not restart it
    * (deleted, stopped, failed, or its Harness process exited); a new deployment replaces it.
+   * `starting` with `HARNESS_RESTARTING` is a Harness process the provider is restarting
+   * after it exited, as opposed to a first start.
    */
   observeHarness?(context: SandboxLogContext): Promise<SandboxHarnessObservation>;
 }

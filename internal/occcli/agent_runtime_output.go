@@ -4,6 +4,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -136,13 +137,35 @@ func runtimeHarnessLine(resource map[string]any) string {
 		state = "unknown"
 	}
 	line := "Harness Sandbox: " + state
-	if code, ok := harness["code"].(string); ok && harnessCode.MatchString(code) {
+	code, _ := harness["code"].(string)
+	if code == "HARNESS_RESTARTING" && state == "starting" {
+		// The provider restarts an exited Harness process; a first start has no code.
+		line += " (" + code
+		if exitCode, ok := harnessInteger(harness["exitCode"], math.MinInt32, math.MaxInt32); ok {
+			line += ", last exit code " + strconv.FormatInt(exitCode, 10)
+		}
+		if restarts, ok := harnessInteger(harness["restarts"], 1, math.MaxUint32); ok {
+			line += ", restart " + strconv.FormatInt(restarts, 10)
+		}
+		return line + "). The Harness process exited and OpenShell is restarting it; " +
+			"if this persists, read its Sandbox logs (occ agent logs AGENT_ID --source sandbox)."
+	}
+	if harnessCode.MatchString(code) {
 		line += " (" + code + ")"
 	}
 	if state == "lost" {
 		line += ". OCC will not restart it; deploy the Agent again to replace it."
 	}
 	return line
+}
+
+// harnessInteger reads a JSON number that is a whole value within [minimum, maximum].
+func harnessInteger(value any, minimum, maximum float64) (int64, bool) {
+	number, ok := value.(float64)
+	if !ok || number != math.Trunc(number) || number < minimum || number > maximum {
+		return 0, false
+	}
+	return int64(number), true
 }
 
 func (app *application) printRuntime(description any) error {
