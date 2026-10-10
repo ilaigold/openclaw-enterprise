@@ -22,8 +22,9 @@ import {
 
 // A refused candidate's stop: a failing stop's status, recheck backoff, yields and restarts, the
 // wait past the deadline and a refusal lifted during it, and supersession while the stop fails.
-// The rest of worker health, including refused exclusive and shared deployments, is in
-// postgres-worker-agent-revision-health.test.mjs; the lane runs the revision files at once.
+// The rest of worker health, including refused exclusive and shared deployments, is in the
+// -health sibling; the lane runs the revision files at once. Neither file names the other in
+// full: CI Impact sends a test-only change to full CI when another file names that test.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);

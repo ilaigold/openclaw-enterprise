@@ -23,7 +23,7 @@ import {
 // deployment and dispatch cases are in postgres-worker-agent-revision.test.mjs; repository
 // sessions, Agent stop and deletion, and Namespace teardown are in
 // postgres-worker-agent-revision-teardown.test.mjs; a refused candidate's stop and its wait are
-// in postgres-worker-agent-revision-refused-stop.test.mjs. The lane runs the four files at once.
+// in the -refused-stop sibling. The lane runs the four files at once.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
