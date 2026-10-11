@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -38,6 +46,17 @@ function invoke(args, cwd = root) {
 }
 
 const passing = "import test from 'node:test'; test('passes', () => {});\n";
+
+// The escape target must sit outside this checkout, but TMPDIR may be inside it.
+function outsideRepository() {
+  for (const base of [tmpdir(), homedir()]) {
+    const path = relative(realpathSync(root), realpathSync(base));
+    if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) {
+      return base;
+    }
+  }
+  throw new Error("Neither TMPDIR nor HOME is outside this repository");
+}
 
 test("runs actual passing, skipped and todo tests without converting expected failure to failure", (t) => {
   const f = fixture(t);
@@ -77,7 +96,7 @@ test("validates every path and option before starting any selected file", (t) =>
     "valid.test.mjs",
     `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'ran');`,
   );
-  const outside = mkdtempSync(join(tmpdir(), "oce-outside-tests-"));
+  const outside = mkdtempSync(join(outsideRepository(), "oce-outside-tests-"));
   t.after(() => rmSync(outside, { recursive: true, force: true }));
   const escaped = join(outside, "escape.test.mjs");
   writeFileSync(escaped, passing);
