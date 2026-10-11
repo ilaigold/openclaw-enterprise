@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
+  accessSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -48,14 +51,26 @@ function invoke(args, cwd = root) {
 const passing = "import test from 'node:test'; test('passes', () => {});\n";
 
 // The escape target must sit outside this checkout, but TMPDIR may be inside it.
+// HOME is consulted only when TMPDIR is unusable; a missing or unwritable base is skipped.
 function outsideRepository() {
-  for (const base of [tmpdir(), homedir()].map((path) => realpathSync(path))) {
-    const path = relative(realpathSync(root), base);
+  const checkout = realpathSync(root);
+  for (const candidate of [tmpdir, homedir]) {
+    let base;
+    try {
+      base = realpathSync(candidate());
+      accessSync(base, constants.W_OK);
+    } catch {
+      continue;
+    }
+    if (!statSync(base).isDirectory()) {
+      continue;
+    }
+    const path = relative(checkout, base);
     if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) {
       return base;
     }
   }
-  throw new Error("Neither TMPDIR nor HOME is outside this repository");
+  throw new Error("Neither TMPDIR nor HOME is a writable directory outside this repository");
 }
 
 test("runs actual passing, skipped and todo tests without converting expected failure to failure", (t) => {
