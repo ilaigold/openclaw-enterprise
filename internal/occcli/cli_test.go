@@ -344,6 +344,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		{"agent", "runtime", "my-agent"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--tail", "0"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--tail", "1001"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "0"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "25h"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--follow", "--previous"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--level", "unknown"},

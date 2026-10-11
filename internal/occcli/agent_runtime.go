@@ -164,6 +164,7 @@ type runtimeLogOptions struct {
 	previous bool
 	tail     int
 	since    time.Duration
+	sinceSet bool
 	follow   bool
 	level    string
 }
@@ -180,6 +181,7 @@ func (app *application) agentLogsCommand() *cobra.Command {
 		Args:        idArgs(agentIDArg),
 		Annotations: map[string]string{outputFormatsAnnotation: "text,json"},
 		RunE: func(command *cobra.Command, args []string) error {
+			options.sinceSet = command.Flags().Changed("since")
 			return app.runAgentLogs(command, args[0], options)
 		},
 	}
@@ -209,7 +211,7 @@ func (options runtimeLogOptions) query() (url.Values, error) {
 	if options.tail < 1 || options.tail > 1000 {
 		return nil, fmt.Errorf("--tail must be between 1 and 1000")
 	}
-	if options.since < 0 || options.since > 24*time.Hour {
+	if (options.sinceSet && options.since == 0) || options.since < 0 || options.since > 24*time.Hour {
 		return nil, fmt.Errorf("--since must be between 1s and 24h")
 	}
 	if options.follow && options.previous {

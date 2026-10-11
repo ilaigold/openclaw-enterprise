@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-10
-last_updated_session: authoring-run/b0c35eb4-2b87-4f3e-aec3-8c416cdef3bb
+updated: 2026-10-11
+last_updated_session: issue-2109
 ---
 
 # Agent runtime logs flow
@@ -210,8 +210,10 @@ console remembers a `403` from either route for the signed-in operator for the
 page session, so reopening the Logs tab adds no audited denial, and another
 operator signing in on the tab asks again. Its status message names the
 log-text grants too. On the Gateway source it points to the Harness source while
-no Harness Pod is ready, or to Deployment activity while none exists. The
-CLI's `--follow` loop re-sends the cursor every 2 seconds.
+no Harness Pod is ready, or to Deployment activity while none exists. The CLI
+refuses an explicitly supplied zero `--since` before selecting a revision or
+creating an API client; omitting the flag retains the unfiltered default. Its
+`--follow` loop re-sends the cursor every 2 seconds.
 `internal/occcli/agent_runtime.go:runAgentLogs` treats command-context cancellation as a
 clean follow exit during both initial revision selection and page polling.
 Without `--follow`, a canceled request remains an error. Driver errors map to
@@ -252,6 +254,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 08:15: Distinguish an omitted runtime-log `--since` from an explicit zero and refuse the latter before any API request. (issue-2109 - 731db98bbbc8e5296571e64130ac62482413520e)
 
 - 2026-10-10 07:06: Merge main; preserve initial continuation, timestamps, Events, termination and histories. (authoring-run/b0c35eb4-2b87-4f3e-aec3-8c416cdef3bb - b744ee6f217d17942cdaacea80cbbd08126aa87f)
 
