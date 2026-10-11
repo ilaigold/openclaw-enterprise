@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 const execute = promisify(execFile);
 const script = fileURLToPath(new URL("../../scripts/upgrade-node-platform.py", import.meta.url));
@@ -171,8 +172,7 @@ else:
 });
 
 test("broker capability qualification requires the supported successful response", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-capability-"));
-  const socket = join(root, "broker.sock");
+  const socket = join(await socketDirectory(t, "occ-capability-"), "broker.sock");
   let status = 200;
   let body = '{"durableAdmissionVersion":1}';
   const server = createServer((request, response) => {
@@ -184,7 +184,6 @@ test("broker capability qualification requires the supported successful response
   t.after(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
-    await rm(root, { recursive: true, force: true });
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);

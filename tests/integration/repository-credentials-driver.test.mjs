@@ -2,14 +2,13 @@ import { startReceiptState } from "../fixtures/repository-credentials/receipt-st
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { request } from "node:https";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
@@ -286,8 +285,7 @@ test(
 );
 
 test("Unix control rejects malformed status and preserves authoritative absence versus outage", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "repository-control-reply-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await socketDirectory(t, "repository-control-reply-");
   const socket = join(directory, "control.sock");
   const id = randomUUID();
   const driver = driverFor(
@@ -575,8 +573,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
 });
 
 test("repository descriptions remain scoped and reject stale identity without blocking choices", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "repository-description-reply-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await socketDirectory(t, "repository-description-reply-");
   const socket = join(directory, "control.sock");
   let reply = {
     providerInstanceId: "instance",
@@ -704,7 +701,7 @@ test("repository descriptions remain scoped and reject stale identity without bl
   }
 });
 test("durable admission capability rejects an old response, malformed replies, and timeouts", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "repository-capability-"));
+  const directory = await socketDirectory(t, "repository-capability-");
   const socket = join(directory, "control.sock");
   let response = { status: 404, body: { error: "not-found" } };
   const server = createServer((incoming, outgoing) => {
@@ -725,7 +722,6 @@ test("durable admission capability rejects an old response, malformed replies, a
   t.after(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
   });
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
   // An older broker reports healthy protocol 1 but does not recognize this endpoint.
