@@ -222,12 +222,13 @@ as behind a source-preserving NLB, needs none.
 }
 ```
 
-Client-ID and client-secret Secret keys must differ. Preflight compares custom
-keys with the chart defaults (`client-id` and `client-secret`) when a key is omitted.
+Client-ID and client-secret Secret keys must differ; an omitted key counts as
+the chart default (`client-id` or `client-secret`).
 As the chart requires, each credential Secret is dedicated: a sign-in
 `secretName` (default `occ-github-login`, `occ-google-login` or `occ-oidc-login`),
-`gatewayApiKeySecretName`, `databaseCa.secretName`, the ChatGPT admin Secret
-(with `codex.managedServiceAccounts`) and each repository Secret must differ from
+`gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
+`repository.publicCaSecretName`), the ChatGPT admin Secret (with
+`codex.managedServiceAccounts`) and each repository Secret must differ from
 one another, from the chart's `occ-installation-startup`, `occ-database` and
 `occ-auth` Secrets, from the Gateway TLS (`<release>-agent-gateways-tls` for
 short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
