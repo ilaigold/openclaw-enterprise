@@ -222,26 +222,20 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 ## Debugging and Verification
 
 - `go test ./internal/occcli -run '^TestResourceRequestStopsWhenCommandContextIsCanceled$'`
-  exercises the real CLI and HTTP client against a loopback server, canceling
-  in-flight Agent and revision lookups. Follow exits successfully; one-shot reads
-  retain cancellation errors. This proves local CLI cancellation, not deployed OCC.
+  proves loopback CLI cancellation: follow exits cleanly, while one-shot reads
+  retain the error. It is not deployed OCC proof.
 
 - `503 RUNTIME_LOGS_CLUSTER_RBAC` means the API ServiceAccount lacks
   `pods/log`, `events` or, on an execution cluster, `pods` reads in that
   namespace. `503 RUNTIME_LOGS_AUDIT_UNAVAILABLE` means no output was read.
 - `tests/conformance/runtime-logs-content.test.mjs` plants credentials, prompts
   and protocol lines through the real handler; `occ-api-security.test.mjs` covers
-  tiers, cursors and failures; `kubernetes-compute.test.mjs` covers plane
-  selection, Event filtering and the typed `403`. These use in-memory Kubernetes
-  responses; `agent-runtime-logs-k3d-real.test.mjs` reads a real cluster.
-  The same content suite exercises the real reader, cursor and sanitizer with
-  synthetic Driver pages: cross-poll masking, replay/eviction, uncertain times,
-  cuts, paired-field validation and stream/view resets. A separate handler case
-  checks the serialized cursor through the supported controller fixture. These
-  controls do not establish real-cluster behavior.
-  `runtime-logs-sandbox.test.mjs` drives the sandbox source through the real
-  handler and OpenShell Driver with a gateway client that answers only
-  `GetSandboxLogs`; `openshell-gateway-wire.test.mjs` checks the wire shape.
+  tiers and cursors; `kubernetes-compute.test.mjs` covers plane selection and
+  Events. These use in-memory Kubernetes responses. The content suite also covers
+  masking, replay, cuts, field validation and stream resets; a handler case checks
+  cursor serialization. `agent-runtime-logs-k3d-real.test.mjs` reads a real cluster.
+  `runtime-logs-sandbox.test.mjs` drives the OpenShell source through the handler;
+  `openshell-gateway-wire.test.mjs` checks the wire shape.
 
 ## Related docs
 
