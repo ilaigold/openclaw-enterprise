@@ -133,8 +133,11 @@ import {
   OAUTH_VOLUME_ANNOTATION,
 } from "../../kubernetes/oauth-seal.ts";
 import {
+  ComputeStopYieldedError,
+  computeStopShouldYield,
   computeWorkWaiting,
   currentComputeAbortSignal,
+  isYieldingComputeStop,
   withComputeAbortSignal,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -1035,6 +1038,8 @@ function settledSchedulingConflict(
 
 const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
+// A yielding stop asks the queue whether other Work waits at most once a second.
+const WORKLOAD_TERMINATION_YIELD_CHECK_MS = 1_000;
 const AGENT_TRANSPORT_PORT = 18_790;
 const NATIVE_WORKER_PROFILE = "dedicated-native";
 const DEFAULT_NATIVE_OPENCLAW_SESSION_CAPACITY = 8;
@@ -1803,7 +1808,7 @@ function isManagedKubernetesNamespaceName(
     name === kubernetesNamespaceName(namespaceId) ||
     name === previousKubernetesNamespaceName(namespaceId) ||
     // A released split-layout storage namespace adopted as the tenant namespace in place
-    // (docs/guides/deploy/breaking-changes.md, 2026-10-05). It keeps its storage label.
+    // (docs/guides/deploy/breaking-changes-archive.md, 2026-10-05). It keeps its storage label.
     (name === kubernetesGatewayNamespaceName(namespaceId) &&
       labels["openclaw.dev/gateway-namespace"] === namespaceId)
   );
@@ -6235,8 +6240,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.lifecycle.beforeWorkloadStop(revision);
     // Stop removes the serving path first so no new traffic reaches a runtime while
     // its exact Harness is being shut down.
-    await this.removeStoppedGateway(revision, namespace);
-    await this.shutdownRevisionRuntime(revision, namespace);
+    if (isYieldingComputeStop()) {
+      // OCC refused this candidate, so it must stop serving now: requests it may already serve
+      // are cut rather than drained into the Harness. The Harness is deleted before the Gateway's
+      // Pods are awaited, so a stop that yields during that wait no longer leaves it running,
+      // holding its credentials, until the retry (finding 1025).
+      await this.removeStoppedGateway(revision, namespace, { waitForPods: false });
+      await this.shutdownRevisionRuntime(revision, namespace);
+      await this.waitForRevisionPodsToTerminate(revision, gatewayNamespace, "gateway");
+    } else {
+      await this.removeStoppedGateway(revision, namespace);
+      await this.shutdownRevisionRuntime(revision, namespace);
+    }
     // Its Pods are gone, so drop the revision's credential copies and snapshots.
     // Preparing the revision again re-projects them from the canonical sources.
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
@@ -6302,11 +6317,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harness.mode === "embedded") {
       return;
     }
+    const sandboxDriver = this.sandboxDriverForRevision(revision);
+    const computeOwnsWorkload = sandboxDriver?.provisionHarness === undefined;
+    if (computeOwnsWorkload && isYieldingComputeStop()) {
+      // A refused candidate's Harness goes before the OAuth bootstrap's wait, which may yield.
+      await this.deleteRevisionAgentDeployment(revision, namespace);
+    }
     if (revision.harnessAuth.method === "oauth") {
       await this.removeOAuthBootstrap(revision, namespace);
     }
-    const sandboxDriver = this.sandboxDriverForRevision(revision);
-    const computeOwnsWorkload = sandboxDriver?.provisionHarness === undefined;
     if (computeOwnsWorkload) {
       await this.deleteRevisionAgentDeployment(revision, namespace);
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
@@ -6325,9 +6344,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  /** Deletes the revision's Gateway and, unless `waitForPods` is false, waits for its Pods. */
   private async removeStoppedGateway(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
+    { waitForPods = true }: { readonly waitForPods?: boolean } = {},
   ): Promise<void> {
     namespace = this.gatewayNamespace(revision, namespace);
     const name = `gateway-${sha256Hex(revision.agentId, 12)}`;
@@ -6335,7 +6356,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.deleteGatewayUnauthenticatedRoutes(name, ownership, namespace, revision.id);
     await this.deleteGatewayRoute(name, ownership, namespace, revision.id);
     await this.deleteNamedRuntimeResources(name, ownership, namespace, revision.id);
-    await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway");
+    if (waitForPods) {
+      await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway");
+    }
   }
 
   private async waitForRevisionPodsToTerminate(
@@ -6358,6 +6381,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ? GATEWAY_STOP_TIMEOUT_MS + REQUEST_TIMEOUT_MS
         : WORKLOAD_TERMINATION_TIMEOUT_MS;
     const deadline = Date.now() + timeoutMs;
+    let yieldCheckedAt: number | undefined;
     for (;;) {
       signal.throwIfAborted();
       const observed = asRecord(
@@ -6408,6 +6432,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw new DependencyUnavailableError(
           "The AgentRevision workload Pods did not terminate before the deadline.",
         );
+      }
+      // A refused candidate's stop does not hold the serial worker while its Pods terminate:
+      // other Work runs, and the next pass repeats the whole stop (finding 1022).
+      if (
+        yieldCheckedAt === undefined ||
+        Date.now() - yieldCheckedAt >= WORKLOAD_TERMINATION_YIELD_CHECK_MS
+      ) {
+        yieldCheckedAt = Date.now();
+        if (await computeStopShouldYield()) {
+          throw new ComputeStopYieldedError(
+            "The AgentRevision workload Pods are still terminating; other work is waiting.",
+          );
+        }
       }
       await new Promise<void>((resolve) => setTimeout(resolve, WORKLOAD_TERMINATION_POLL_MS));
     }

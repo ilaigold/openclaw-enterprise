@@ -3956,6 +3956,20 @@ export const scenarios = {
     description:
       "Load, edit, save, and reload AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Changes apply to live files, not revisions.",
   },
+  workspaceCleanCRLF: {
+    group: "Components/Workspace",
+    name: "Unchanged Windows line endings",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    workspaceFiles: { "USER.md": "# Saved USER.md\r\n# Windows instructions\r\n" },
+    description:
+      "An untouched CRLF file shows LF and stays clean. Save enables only after an edit.",
+    steps: [
+      "Reload USER.md without editing; Save stays disabled.",
+      "Edit USER.md, then Save and Reload.",
+    ],
+    gap: "Simulated files; no live Agent gateway.",
+  },
   workspaceUnavailable: {
     group: "Components/Workspace",
     name: "No deployed revision",

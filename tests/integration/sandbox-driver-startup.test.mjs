@@ -560,7 +560,10 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     version: "1.0.0",
     mode: "dedicated",
   });
-  assert.equal(codex.plugins.entries.codex.config.appServer.sandbox, "danger-full-access");
+  assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
+    sandbox: "danger-full-access",
+    approvalsReviewer: "user",
+  });
   assert.throws(
     () =>
       driver.configureAgent(configuration, {
@@ -570,6 +573,47 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
       }),
     /supports only dedicated Harness revisions/,
   );
+});
+
+test("OpenShell keeps dedicated Codex turns out of Codex's own sandbox (finding 1026)", () => {
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(workspaceGatewayClient()),
+  });
+  const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  // The documented OpenShell Configuration's guardian app-server, plus a member's model-backed
+  // reviewer. On a model the Gateway cannot verify for review, both make the pinned Gateway
+  // force a user reviewer, and with it a workspace-write turn sandbox that bwrap cannot start
+  // inside OpenShell. The explicit user reviewer keeps the frozen danger-full-access.
+  for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
+    const appServer = {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "read-only",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      ...(approvalsReviewer === undefined ? {} : { approvalsReviewer }),
+    };
+    const configuration = {
+      plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+    };
+    const configured = driver.configureAgent(configuration, harness);
+    assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "danger-full-access",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      approvalsReviewer: "user",
+    });
+    assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
+    assert.equal(appServer.sandbox, "read-only");
+    // Status reads rerun the hook on stored work, so the pin must be idempotent.
+    assert.deepEqual(driver.configureAgent(configured, harness), configured);
+  }
 });
 
 test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
@@ -846,6 +890,82 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
   sandboxes.set(name, { ...sandboxes.get(name), phase: "SANDBOX_PHASE_READY" });
   services.delete(name);
   await assert.rejects(provision(), /exists without its exact bearer-passthrough Harness service/);
+});
+
+test("OpenShell has the gateway restart an exited Harness and still adopts Sandboxes created without that policy", async () => {
+  // Finding 1029: with no policy OpenShell persists NEVER, and an exited Harness stays down until
+  // the Agent is deployed again. A signalled Harness exits 0, so only ALWAYS restarts it.
+  const gatewayClient = workspaceGatewayClient();
+  const sandboxes = new Map();
+  const creates = [];
+  gatewayClient.getSandbox = async ({ name }) => sandboxes.get(name);
+  gatewayClient.getService = async (_workspace, sandbox, service) => {
+    const url = sandboxes.get(sandbox)?.serviceUrls[""];
+    return url === undefined
+      ? undefined
+      : { sandbox, name: service, targetPort: 8080, authorizationMode: 2, advertisedUrl: url, url };
+  };
+  gatewayClient.createSandbox = async (request) => {
+    creates.push(request);
+    const sandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: request.labels,
+      annotations: { ...request.annotations },
+      spec: request.spec,
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    };
+    sandboxes.set(request.name, sandbox);
+    return sandbox;
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const context = namespaceContext();
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000001029",
+    namespaceId: context.namespace.id,
+    agentId: "agt_00000000-0000-4000-8000-000000001029",
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: driver.id,
+  };
+  const provision = () =>
+    driver.provisionHarness({ ...context, revision, requirements: codexRequirements(revision) });
+
+  const first = await provision();
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
+
+  // The gateway reports the stored policy by enum name, or by number from an older decoder.
+  // A Sandbox stored before the policy existed (NEVER, or unset) is still this revision's own.
+  const stored = sandboxes.get(first.resourceName);
+  for (const policy of [
+    "SANDBOX_RESTART_POLICY_ALWAYS",
+    3,
+    "SANDBOX_RESTART_POLICY_NEVER",
+    1,
+    "SANDBOX_RESTART_POLICY_UNSPECIFIED",
+    0,
+    undefined,
+  ]) {
+    const { restart_policy: _omitted, ...spec } = stored.spec;
+    sandboxes.set(first.resourceName, {
+      ...stored,
+      spec: policy === undefined ? spec : { ...spec, restart_policy: policy },
+    });
+    assert.deepEqual(await provision(), first, `adopts a Sandbox stored with ${String(policy)}`);
+  }
+  // OCC never asks for ON_FAILURE, so a Sandbox stored with it is not this revision's.
+  for (const policy of ["SANDBOX_RESTART_POLICY_ON_FAILURE", 2]) {
+    sandboxes.set(first.resourceName, {
+      ...stored,
+      spec: { ...stored.spec, restart_policy: policy },
+    });
+    await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  }
+  assert.equal(creates.length, 1);
 });
 
 test("OpenShell moves a revision's create to a fresh request_id after the gateway refuses the old one", async () => {

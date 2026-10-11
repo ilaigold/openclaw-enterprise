@@ -50,9 +50,11 @@ import {
   ServiceAccountCredentialSecretExistsError,
 } from "../../packages/occ/src/index.ts";
 import {
+  ComputeStopYieldedError,
   currentComputeAbortSignal,
   withComputeAbortSignal,
   withComputeWorkWaiting,
+  withYieldingComputeStop,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -4247,6 +4249,7 @@ test("Kubernetes refuses native listener addresses that cannot serve its Pod-fac
   ];
   for (const configure of [options, routedOptions]) {
     const driver = createKubernetesComputeDriver(configure());
+    let settingFailure;
     for (const [gateway, setting] of invalid) {
       const candidate = routedRevision(driver, { configuration: { gateway } });
       assert.throws(
@@ -4266,10 +4269,22 @@ test("Kubernetes refuses native listener addresses that cannot serve its Pod-fac
       driver.clients = async () => {
         throw new Error("unexpected cluster access");
       };
+      // Preparation refuses it like any other gateway setting, not as an admission conflict.
+      if (settingFailure === undefined) {
+        const other = routedRevision(driver, { configuration: { gateway: { auth: null } } });
+        settingFailure = await driver.prepareRevision(other, authContext(other)).then(
+          () => assert.fail("gateway.auth null must be refused"),
+          (error) => error,
+        );
+        assert.match(settingFailure.message, /gateway\.auth /);
+      }
       for (const operation of ["prepareRevision", "activateRevision"]) {
-        await assert.rejects(driver[operation](candidate, authContext(candidate)), {
-          message: new RegExp(setting.replaceAll(".", "\\.")),
-        });
+        await assert.rejects(
+          driver[operation](candidate, authContext(candidate)),
+          (error) =>
+            error.constructor === settingFailure.constructor &&
+            new RegExp(setting.replaceAll(".", "\\.")).test(error.message),
+        );
       }
     }
     for (const gateway of [
@@ -4310,9 +4325,53 @@ test("Kubernetes renders an all-interfaces native listener when gateway.bind is 
   }
 });
 
-test("Kubernetes keeps a revision's gateway document rendered before the lan bind", async () => {
-  for (const bind of [undefined, "auto", "lan"]) {
-    const { driver, revision, objects, records, state, context } = workspaceSetupFixture(false);
+test("Kubernetes keeps a revision's gateway document rendered before the lan bind", async (t) => {
+  // A two-cluster Installation's gateway document carries the execution cluster's CA beside it.
+  const directory = await mkdtemp(join(tmpdir(), "oce-execution-ca-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const certificate = join(directory, "execution-ca.pem");
+  const generated = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-keyout",
+      join(directory, "execution-ca.key"),
+      "-out",
+      certificate,
+      "-subj",
+      "/CN=execution-ca",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  const executionCluster = {
+    ...twoClusterOptions().executionCluster,
+    caBundle: await readFile(certificate, "utf8"),
+  };
+  for (const [bind, computeOptions] of [
+    [undefined, {}],
+    ["auto", {}],
+    ["lan", {}],
+    [undefined, { executionCluster }],
+  ]) {
+    const { driver, revision, objects, records, state, context } = workspaceSetupFixture(
+      false,
+      true,
+      undefined,
+      computeOptions,
+    );
+    if (computeOptions.executionCluster !== undefined) {
+      // One stand-in API serves both clusters.
+      driver.executionApiClients = driver.apiClients;
+    }
     revision.configuration = structuredClone(revision.configuration);
     if (bind !== undefined) {
       revision.configuration.gateway.bind = bind;
@@ -4323,6 +4382,7 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
       key.endsWith(`:gateway-${digest(revision.agentId)}-rev-${digest(revision.id)}`),
     );
     const current = structuredClone(objects.get(documentKey));
+    assert.equal(current.data["execution-ca.pem"], computeOptions.executionCluster?.caBundle);
     const rendered = JSON.parse(current.data["openclaw.json"]);
     assert.equal(rendered.gateway.bind, "lan");
     // Earlier controllers wrote an omitted or auto bind as submitted; that rendering differed
@@ -7278,6 +7338,9 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     podUid: pods[role].metadata.uid,
   });
   let diagnosticsServing = true;
+  // Unrun channel checks the Gateway adds to its one socket check (a status report may carry at
+  // most 32 checks).
+  let extraGatewayChecks = 0;
   driver.apiClients = Promise.resolve({
     core: {
       async listNamespace({ labelSelector }) {
@@ -7332,6 +7395,12 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
               state: role === "agent" ? "succeeded" : "unknown",
               checkedAt: role === "agent" ? "2026-09-19T12:00:00.000Z" : null,
             },
+            ...Array.from({ length: role === "gateway" ? extraGatewayChecks : 0 }, (_, index) => ({
+              component: "gateway",
+              check: `channel-${index}`,
+              state: "unknown",
+              checkedAt: null,
+            })),
           ],
         };
       },
@@ -7411,6 +7480,45 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   ]);
   diagnosticsServing = true;
 
+  // An Agent holding a failed model check reports it as well, without its cause and at
+  // millisecond precision. Held failures lead, and the 32-check cap drops diagnostics checks.
+  const gatewayHeld = runtimeStatus;
+  runtimeStatus = (role) =>
+    role === "gateway"
+      ? gatewayHeld(role)
+      : {
+          ...gatewayHeld(role),
+          runtimeFailure: {
+            component: "agent",
+            check: "model-probe",
+            checkedAt: "2026-09-19T11:58:00Z",
+            code: "MODEL_PROBE_FAILED",
+            cause: { kind: "PROBE_STATUS", detail: "format" },
+          },
+        };
+  extraGatewayChecks = 31;
+  const capped = (await driver.diagnoseAgentDeployment(binding)).checks;
+  assert.equal(capped.length, 32);
+  assert.deepEqual(capped.slice(0, 3), [
+    {
+      component: "agent",
+      check: "model-probe",
+      state: "failed",
+      checkedAt: "2026-09-19T11:58:00.000Z",
+      code: "MODEL_PROBE_FAILED",
+    },
+    { ...heldFailure, state: "failed" },
+    {
+      component: "agent",
+      check: "auth",
+      state: "succeeded",
+      checkedAt: "2026-09-19T12:00:00.000Z",
+    },
+  ]);
+  assert.equal(capped.at(-1).check, "channel-27");
+  extraGatewayChecks = 0;
+  runtimeStatus = gatewayHeld;
+
   // A status read that is refused or returns another Pod's report adds nothing;
   // the diagnostics read alone decides the observation.
   const held = runtimeStatus;
@@ -7436,7 +7544,9 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
   // Tolerating a failed status read never swallows the caller's cancellation.
   const owner = new AbortController();
   const cancelled = new Error("diagnostics caller went away");
-  runtimeStatus = () => {
+  runtimeStatus = async () => {
+    // The diagnostics reads have finished by now, so only the failed status read sees it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
     owner.abort(cancelled);
     throw Object.assign(new Error("pods/proxy denied"), { code: 403, headers: {} });
   };
@@ -12048,6 +12158,147 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
   }
 });
 
+test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
+  // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
+  // waits for the Gateway's Pods, so a yield there leaves no Harness running until the retry.
+  // Any other stop drains the Gateway into the running Harness first.
+  const driver = new KubernetesComputeDriver(options());
+  const revision = routedRevision(driver, { id: "revision-refused-stop-order" });
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  const namespaceResource = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: namespace,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": revision.namespaceId,
+      },
+      annotations: { "openclaw.dev/namespace-id": revision.namespaceId },
+    },
+  };
+  const deploymentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+  const deployment = driver.deployment(
+    deploymentName,
+    {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      servicePrincipalId: revision.servicePrincipalId,
+      revisionId: revision.id,
+    },
+    { name: namespace, plane: "execution" },
+    "agent:local",
+    `agent-${digest(revision.agentId)}`,
+    "agent",
+    {},
+    "info",
+    undefined,
+    undefined,
+    undefined,
+    preparedAuth(driver, namespace, false),
+  );
+  deployment.metadata.uid = "refused-stop-order-agent-uid";
+  const gatewayPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: "refused-stop-order-gateway-pod",
+      namespace,
+      labels: {
+        "openclaw.dev/namespace": revision.namespaceId,
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "gateway",
+      },
+    },
+  };
+  let events = [];
+  let deploymentPresent = true;
+  let gatewayPodsLeft = 0;
+  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
+  driver.apiClients = Promise.resolve({
+    core: {
+      async readNamespacedConfigMap() {
+        throw notFound();
+      },
+      async readNamespacedSecret() {
+        throw notFound();
+      },
+      async readNamespacedService() {
+        throw notFound();
+      },
+      async readNamespacedServiceAccount() {
+        throw notFound();
+      },
+      async listNamespace() {
+        return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
+      },
+      async readNamespace({ name }) {
+        if (name === kubernetesNamespaceName(tenant.id)) {
+          return {
+            ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
+            status: { phase: "Active" },
+          };
+        }
+        return structuredClone(namespaceResource);
+      },
+      async listNamespacedPod(request) {
+        const role = Object.fromEntries(
+          request.labelSelector.split(",").map((entry) => entry.split("=")),
+        )["openclaw.dev/workload-role"];
+        events.push(`list ${role} Pods`);
+        if (role === "gateway" && gatewayPodsLeft > 0) {
+          gatewayPodsLeft -= 1;
+          return { apiVersion: "v1", kind: "PodList", items: [structuredClone(gatewayPod)] };
+        }
+        return { apiVersion: "v1", kind: "PodList", items: [] };
+      },
+    },
+    apps: {
+      async readNamespacedDeployment({ name }) {
+        if (name === deploymentName && deploymentPresent) {
+          return structuredClone(deployment);
+        }
+        throw notFound();
+      },
+      async deleteNamespacedDeployment({ name }) {
+        assert.equal(name, deploymentName);
+        events.push("delete Agent Deployment");
+        deploymentPresent = false;
+      },
+    },
+    objects: {},
+  });
+
+  // Other Work is waiting, so the refused candidate's stop yields at the Gateway wait, after
+  // the Harness's deletion was issued.
+  gatewayPodsLeft = 1;
+  await assert.rejects(
+    withComputeWorkWaiting(
+      async () => true,
+      () => withYieldingComputeStop(() => driver.stopRevision(revision)),
+    ),
+    (error) => error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message),
+  );
+  assert.deepEqual(events, ["delete Agent Deployment", "list agent Pods", "list gateway Pods"]);
+  assert.equal(deploymentPresent, false);
+
+  // Any other stop drains the Gateway before it deletes the Harness, and does not yield.
+  events = [];
+  deploymentPresent = true;
+  gatewayPodsLeft = 1;
+  await withComputeWorkWaiting(
+    async () => true,
+    () => driver.stopRevision(revision),
+  );
+  assert.deepEqual(events, [
+    "list gateway Pods",
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+});
+
 test("stopping a provider-owned Kubernetes revision waits for Sandbox workload termination", async () => {
   let cleanupComplete = false;
   let podObservations = 0;
@@ -12148,6 +12399,28 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
 
   await driver.stopRevision(revision);
   assert.equal(cleanupComplete, true);
+  assert.equal(podObservations, 2);
+
+  // Other Work waiting ends a yielding stop's wait after one observation of a live Pod; the
+  // caller retries the stop (finding 1022). Any other stop keeps waiting for termination.
+  const waiting = async () => true;
+  podObservations = 0;
+  await assert.rejects(
+    withComputeWorkWaiting(waiting, () =>
+      withYieldingComputeStop(() => driver.stopRevision(revision)),
+    ),
+    (error) => error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message),
+  );
+  assert.equal(podObservations, 1);
+  podObservations = 0;
+  await withComputeWorkWaiting(waiting, () => driver.stopRevision(revision));
+  assert.equal(podObservations, 2);
+  // With nothing waiting, a yielding stop waits too.
+  podObservations = 0;
+  await withComputeWorkWaiting(
+    async () => false,
+    () => withYieldingComputeStop(() => driver.stopRevision(revision)),
+  );
   assert.equal(podObservations, 2);
 });
 
