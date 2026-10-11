@@ -172,7 +172,6 @@ else:
 });
 
 test("broker capability qualification requires the supported successful response", async (t) => {
-  const socket = join(await socketDirectory(t, "occ-capability-"), "broker.sock");
   let status = 200;
   let body = '{"durableAdmissionVersion":1}';
   const server = createServer((request, response) => {
@@ -185,6 +184,8 @@ test("broker capability qualification requires the supported successful response
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
+  // Registered after the close hook, so the server closes before its directory goes.
+  const socket = join(await socketDirectory(t, "occ-capability-"), "broker.sock");
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(socket, resolve);

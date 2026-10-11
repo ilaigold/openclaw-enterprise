@@ -701,8 +701,6 @@ test("repository descriptions remain scoped and reject stale identity without bl
   }
 });
 test("durable admission capability rejects an old response, malformed replies, and timeouts", async (t) => {
-  const directory = await socketDirectory(t, "repository-capability-");
-  const socket = join(directory, "control.sock");
   let response = { status: 404, body: { error: "not-found" } };
   const server = createServer((incoming, outgoing) => {
     if (incoming.url === "/healthz") {
@@ -718,11 +716,13 @@ test("durable admission capability rejects an old response, malformed replies, a
     });
     outgoing.end(JSON.stringify(response.body));
   });
-  await new Promise((resolve) => server.listen(socket, resolve));
   t.after(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
+  // Registered after the close hook, so the server closes before its directory goes.
+  const socket = join(await socketDirectory(t, "repository-capability-"), "control.sock");
+  await new Promise((resolve) => server.listen(socket, resolve));
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
   // An older broker reports healthy protocol 1 but does not recognize this endpoint.
   await client.health(AbortSignal.timeout(1000));
