@@ -49,8 +49,8 @@ const passing = "import test from 'node:test'; test('passes', () => {});\n";
 
 // The escape target must sit outside this checkout, but TMPDIR may be inside it.
 function outsideRepository() {
-  for (const base of [tmpdir(), homedir()]) {
-    const path = relative(realpathSync(root), realpathSync(base));
+  for (const base of [tmpdir(), homedir()].map((path) => realpathSync(path))) {
+    const path = relative(realpathSync(root), base);
     if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) {
       return base;
     }

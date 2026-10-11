@@ -1825,8 +1825,8 @@ test("prepareLane pre-pulls logging and metrics images with retry and preserves 
       // Two images are prepared concurrently, so the fake counts each image's
       // pulls in its own file: reading the shared call log while the other
       // image's process creates or appends to it can return an empty or torn line.
-      // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
       const dockerPath = join(root, "docker");
+      // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
       await writeFile(
         dockerPath,
         `#!${process.execPath}
