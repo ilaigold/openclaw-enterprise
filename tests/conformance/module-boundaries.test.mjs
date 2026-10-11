@@ -277,9 +277,13 @@ describe("module boundaries", { concurrency: true }, () => {
         boundaries: [boundary],
       },
     });
-    assert.equal(
-      violation(included, source, "forbid-hidden-type")?.to,
-      "packages/library/types/hidden.d.ts",
+    assert.ok(
+      included.violations.some(
+        (item) =>
+          item.from === source &&
+          item.to === "packages/library/types/hidden.d.ts" &&
+          item.rule === "forbid-hidden-type",
+      ),
     );
   });
 
