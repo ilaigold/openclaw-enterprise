@@ -1136,8 +1136,10 @@ func (app *application) validateOptions(command *cobra.Command) error {
 // emptyFlagValues says what each listed flag must name. These flags read an
 // empty value as omitted, so an explicit --flag= is refused before any work
 // instead of silently taking the default or failing later with a misleading
-// error. --ca-bundle is not listed: --ca-bundle= deliberately clears
-// OCC_CA_BUNDLE. The other string flags refuse an empty value themselves.
+// error. --ca-bundle= deliberately clears OCC_CA_BUNDLE, and --namespace=
+// clears OCC_NAMESPACE (service-key create then issues an Installation-scoped
+// key; Namespace commands refuse it), so neither is listed. The other string
+// flags refuse an empty value themselves.
 var emptyFlagValues = map[string]string{
 	"file":              "a JSON document",
 	"key-output":        "a key file path",

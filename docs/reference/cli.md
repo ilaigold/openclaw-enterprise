@@ -8,8 +8,9 @@ installed version, run `occ --help` or add `--help` to a command.
 
 Command-line flags override the corresponding environment variables. An
 explicitly empty value, such as `--file=` or `--revision=`, is refused before
-the command does anything; omit the flag to use its default. `--ca-bundle=`
-clears `OCC_CA_BUNDLE`.
+the command does anything; omit the flag to use its default. Two exceptions
+clear their environment variable: `--ca-bundle=`, and `--namespace=`, which
+`service-key create` accepts for an Installation-scoped principal.
 
 | Flag                 | Environment variable   | What it controls                                                                                                                           |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
