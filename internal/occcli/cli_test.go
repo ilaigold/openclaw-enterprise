@@ -136,6 +136,22 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 			t.Fatalf("%v: got %+v, want %+v", test.args, calls, test.want)
 		}
 	}
+
+	calls = nil
+	command := New(io.Discard, io.Discard)
+	command.SetArgs([]string{
+		"credential-source", "update", "cs_1", "--file=",
+		"--url", server.URL,
+		"--service-key-file", keyFile,
+		"--namespace", "ns_1",
+	})
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--file must name a JSON document") {
+		t.Fatalf("explicit empty --file error = %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("explicit empty --file sent requests: %+v", calls)
+	}
 }
 
 type runtimeLogStub struct {

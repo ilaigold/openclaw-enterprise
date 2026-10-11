@@ -576,13 +576,17 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		Use:   "update ID",
 		Short: "Push current or replacement Secret values to the gateway copy",
 		Args:  idArgs(credentialSourceIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
+			fileSet := command.Flags().Changed("file")
+			if fileSet && updateFile == "" {
+				return fmt.Errorf("--file must name a JSON document")
+			}
 			namespace, err := app.requiredNamespace()
 			if err != nil {
 				return err
 			}
 			body := jsontext.Value("{}")
-			if updateFile != "" {
+			if fileSet {
 				body, err = readJSON(updateFile)
 				if err != nil {
 					return err
