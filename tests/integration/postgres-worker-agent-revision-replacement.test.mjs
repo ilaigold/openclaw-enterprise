@@ -21,8 +21,9 @@ import {
 // Compute, predecessors that come back after the sweep, and a refused wait's failed reads and a
 // refusal lifted past the deadline. Worker health is in the -health sibling, and a refused
 // candidate's stop and its wait in the -refused-stop and -refused-wait siblings; the lane runs
-// the revision files at once. No file names another in full: CI Impact sends a test-only change
-// to full CI when another file names that test.
+// the revision files at once. These files name the -replacement, -refused-stop and -refused-wait
+// siblings only by suffix: CI Impact sends a test-only change to full CI when another file names
+// that test.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);

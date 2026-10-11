@@ -20,12 +20,13 @@ import {
   waitForRefusedStopWaits,
 } from "../helpers/postgres-worker-refused-candidate.mjs";
 
-// A stored refusal's wait on its candidate's stop: it retries only the stop, survives failures
-// before the stop past the deadline, deploys or keeps its refusal when the refusal lifts, finishes
-// the stop when superseded, and keeps waiting across lost claims and graceful restarts. The
-// stop's own status, backoff and yields are in the -refused-stop sibling; the lane runs the
-// revision files at once. No file names another in full: CI Impact sends a test-only change to
-// full CI when another file names that test.
+// A stored refusal's wait on its candidate's stop: it retries only the stop, is published while a
+// yielding stop competes with due work, survives failures before the stop past the deadline,
+// deploys or keeps its refusal when the refusal lifts, finishes the stop when superseded, and keeps
+// waiting across lost claims and graceful restarts. The stop's own status and backoff, and its
+// yields to other Work, are in the -refused-stop sibling; the lane runs the revision files at
+// once. These files name the -replacement, -refused-stop and -refused-wait siblings only by
+// suffix: CI Impact sends a test-only change to full CI when another file names that test.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);

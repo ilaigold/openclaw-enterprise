@@ -18,8 +18,9 @@ import {
 // restarts and shutdowns, and yields to other Work. A stored refusal's wait (its failures, a lift
 // or supersession during it, and lost claims and restarts) is in the -refused-wait sibling;
 // refused exclusive and shared deployments are in the -replacement sibling. The lane runs the
-// revision files at once. No file names another in full: CI Impact sends a test-only change to
-// full CI when another file names that test.
+// revision files at once. These files name the -replacement, -refused-stop and -refused-wait
+// siblings only by suffix: CI Impact sends a test-only change to full CI when another file names
+// that test.
 
 const { cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
