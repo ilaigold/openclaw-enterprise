@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -59,6 +60,9 @@ function outsideRepository() {
       base = realpathSync(candidate());
       accessSync(base, constants.W_OK);
     } catch {
+      continue;
+    }
+    if (!statSync(base).isDirectory()) {
       continue;
     }
     const path = relative(checkout, base);
