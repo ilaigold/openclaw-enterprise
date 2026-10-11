@@ -6,7 +6,10 @@ installed version, run `occ --help` or add `--help` to a command.
 
 ## Global options
 
-Command-line flags override the corresponding environment variables.
+Command-line flags override the corresponding environment variables. An
+explicitly empty value, such as `--file=` or `--revision=`, is refused before
+the command does anything; omit the flag to use its default. `--ca-bundle=`
+clears `OCC_CA_BUNDLE`.
 
 | Flag                 | Environment variable   | What it controls                                                                                                                           |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
