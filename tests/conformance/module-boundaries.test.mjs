@@ -41,8 +41,18 @@ async function failure(promise, code) {
     caught = error;
     return true;
   });
-  assert.equal(caught.code, code);
+  assert.equal(caught.code, code, caught.stderr);
   return caught;
+}
+
+// Awaits every case, then rethrows the first failure, so no case outlives its test.
+async function settle(promises) {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) {
+    throw failed.reason;
+  }
+  return results.map((result) => result.value);
 }
 
 const dynamic = "unresolved-dynamic-import";
@@ -141,7 +151,7 @@ async function workspace(t, overrides = {}) {
       return report;
     },
     // Node loads the public module, and the analyzer keeps that known edge.
-    open: async (path, code, to, output = "PUBLIC") => {
+    open: async (path, code, { to, output = "PUBLIC" }) => {
       const report = await observe(path, code, output);
       assert.ok(reaches(report, path, to), code);
       return report;
@@ -154,7 +164,7 @@ describe("module boundaries", { concurrency: true }, () => {
     const { root, write, cli: verify, link } = await workspace(t);
     await link();
     await write("apps/app/src/blocked.cjs", 'require("@fixture/library/blocked");');
-    const [json, text, missing] = await Promise.all([
+    const [json, text, missing] = await settle([
       failure(verify(["--json"]), 1),
       failure(verify(), 1),
       failure(node([cli, "--root", root, "--policy", "missing.json"]), 2),
@@ -186,11 +196,11 @@ describe("module boundaries", { concurrency: true }, () => {
       ["packages/library/package.json", ({ args }) => args],
       ["apps/app/src/package.json", ({ args }) => args],
     ];
-    await Promise.all(
+    await settle(
       cases.map(async ([path, options]) => {
         const space = await workspace(t);
         await space.write(path, marker);
-        for (const error of await Promise.all(
+        for (const error of await settle(
           [[], ["--json"]].map((json) => failure(node([cli, ...options(space), ...json]), 2)),
         )) {
           const output = error.stdout + error.stderr;
@@ -218,7 +228,7 @@ describe("module boundaries", { concurrency: true }, () => {
       let esm; try { esm = import.meta.resolve("@fixture/library/leaf"); } catch (error) { esm = error.code; }
       console.log(JSON.stringify({ esm, cjs: createRequire(import.meta.url).resolve("@fixture/library/leaf") }));
     `;
-    const [oracle, normal, error] = await Promise.all([
+    const [oracle, normal, error] = await settle([
       node(["--input-type=module", "-e", script], { cwd: join(root, "apps/app/src"), env }),
       verify(["--json"], { env: { ...process.env, NODE_PATH: "" } }),
       failure(verify(["--json"], { env }), 1),
@@ -431,11 +441,11 @@ describe("module boundaries", { concurrency: true }, () => {
     const publicCjs = "apps/app/src/public/chosen.cjs";
     const publicEsm = "apps/app/src/public/chosen.mjs";
     // The CommonJS and ESM halves use separate workspaces (one source each) and run concurrently.
-    const spaces = () => workspace(t, { boundaries: [noPrivate("apps/app/src/public/**")] });
+    const space = () => workspace(t, { boundaries: [noPrivate("apps/app/src/public/**")] });
     const commonjs = async () => {
-      const { decoys, closed, open } = await spaces();
+      const { decoys, closed, open } = await space();
       await decoys("chosen.cjs", "chosen.mjs");
-      const join = 'console.log(require(path.join(__dirname, "chosen.cjs")));';
+      const viaJoin = 'console.log(require(path.join(__dirname, "chosen.cjs")));';
       for (const setup of [
         'path.join = () => __dirname + "/../private/chosen.cjs";',
         'path["join"] = () => __dirname + "/../private/chosen.cjs";',
@@ -447,7 +457,7 @@ describe("module boundaries", { concurrency: true }, () => {
         '({ join: path.join } = {join: () => __dirname + "/../private/chosen.cjs"});',
         'Object.defineProperty(path, "join", {value: () => __dirname + "/../private/chosen.cjs"});',
       ]) {
-        await closed(source, `const path = require("node:path"); ${setup}\n${join}`, {
+        await closed(source, `const path = require("node:path"); ${setup}\n${viaJoin}`, {
           avoid: publicCjs,
         });
       }
@@ -473,7 +483,7 @@ describe("module boundaries", { concurrency: true }, () => {
       await open(
         source,
         'const path = require("node:path"); const alias = path.posix; console.log(require(alias.join(__dirname, "chosen.cjs")));',
-        publicCjs,
+        { to: publicCjs },
       );
       for (const [setup, callee] of [
         ['const path = require("node:path"); const load = (path.join);', "load"],
@@ -481,11 +491,9 @@ describe("module boundaries", { concurrency: true }, () => {
         ['const path = require("node:path");', "(path.join)"],
         ['const {join} = require("node:path");', "(join)"],
       ]) {
-        await open(
-          source,
-          `${setup} console.log(require(${callee}(__dirname, "chosen.cjs")));`,
-          publicCjs,
-        );
+        await open(source, `${setup} console.log(require(${callee}(__dirname, "chosen.cjs")));`, {
+          to: publicCjs,
+        });
       }
       await closed(
         source,
@@ -495,7 +503,7 @@ describe("module boundaries", { concurrency: true }, () => {
       );
     };
     const modules = async () => {
-      const { decoys, closed, open } = await spaces();
+      const { decoys, closed, open } = await space();
       await decoys("chosen.cjs", "chosen.mjs");
       const load = (constructor = "URL") =>
         `console.log((await import(new ${constructor}("./chosen.mjs", import.meta.url).href)).default);`;
@@ -518,7 +526,7 @@ describe("module boundaries", { concurrency: true }, () => {
       ]) {
         await closed(esm, `${declaration}\n${redirect}\n${load()}`);
       }
-      await open(esm, load(), publicEsm);
+      await open(esm, load(), { to: publicEsm });
       for (const [declaration, constructor] of [
         ['import {URL as U} from "node:url";', "U"],
         ['import url from "node:url"; const {URL: U} = url;', "U"],
@@ -527,7 +535,7 @@ describe("module boundaries", { concurrency: true }, () => {
         ['import * as url from "node:url";', "(url.URL)"],
         ["", "(URL)"],
       ]) {
-        await open(esm, `${declaration} ${load(constructor)}`, publicEsm);
+        await open(esm, `${declaration} ${load(constructor)}`, { to: publicEsm });
       }
       await closed(
         esm,
@@ -535,16 +543,16 @@ describe("module boundaries", { concurrency: true }, () => {
        ${redirect.replace("U.prototype", "(U).prototype")}
        ${load("(U)")}`,
       );
-      await open(esm, `const global = {}; global.URL = class {}; ${load()}`, publicEsm);
+      await open(esm, `const global = {}; global.URL = class {}; ${load()}`, { to: publicEsm });
       for (const property of ["global", "globalThis", "URL"]) {
         await open(
           esm,
           `const settings = JSON.parse('{"${property}":false}'); void settings.${property};\n${load()}`,
-          publicEsm,
+          { to: publicEsm },
         );
       }
     };
-    await Promise.all([commonjs(), modules()]);
+    await settle([commonjs(), modules()]);
   });
 
   test("fails closed for a non-native Node path flavor", async (t) => {
@@ -625,7 +633,7 @@ describe("module boundaries", { concurrency: true }, () => {
         `${setup}
        function local(__dirname, __filename) { __dirname = "x"; __filename = "y"; }
        console.log(require(${target}));`,
-        avoid,
+        { to: avoid },
       );
       assert.equal(report.violations.filter((item) => item.from === source).length, 0);
     }
@@ -659,7 +667,7 @@ describe("module boundaries", { concurrency: true }, () => {
     await open(
       source,
       'function local(require) { require = () => 1; } console.log(require("./secret.cjs"));',
-      avoid,
+      { to: avoid },
     );
   });
 
@@ -694,7 +702,7 @@ describe("module boundaries", { concurrency: true }, () => {
       'function local(module) { module = {}; } module.exports = 1; console.log(module.require("./secret.cjs"));',
       'const alias = module; console.log(alias.require("./secret.cjs"));',
     ]) {
-      await open(source, code, avoid);
+      await open(source, code, { to: avoid });
     }
   });
 
@@ -710,9 +718,7 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.notEqual(violations[0].specifier, violations[1].specifier);
     assert.ok(violations.every((item) => item.specifier.startsWith("unknown:sha256:")));
     assert.equal(JSON.stringify(report).includes("PRIVATE_"), false);
-    for (const error of await Promise.all(
-      [[], ["--json"]].map((json) => failure(verify(json), 1)),
-    )) {
+    for (const error of await settle([[], ["--json"]].map((json) => failure(verify(json), 1)))) {
       assert.equal((error.stdout + error.stderr).includes("PRIVATE_"), false);
     }
     const exceptions = exceptionsFor(violations.find((item) => item.from === esm));
@@ -735,7 +741,7 @@ describe("module boundaries", { concurrency: true }, () => {
     await mkdir(join(root, "outer"));
     await symlink(outside, join(root, "outer", "linked"), "dir");
     // Each invalid policy gets its own file so the CLI runs concurrently.
-    await Promise.all(
+    await settle(
       ["linked", "self/apps/app/src", "outer/linked/nested"].map(async (sourceRoot, index) => {
         const invalid = { ...policy, sourceRoots: [sourceRoot], packages: [] };
         await assert.rejects(
@@ -1066,6 +1072,7 @@ describe("module boundaries", { concurrency: true }, () => {
       urlLoader("./helper"); pathLoader("./indexed");
     `,
     );
+    const report = await check();
     const targets = (path, kinds) =>
       from(report, `${base}/${path}`)
         .filter((edge) => kinds.includes(edge.kind))
@@ -1073,7 +1080,6 @@ describe("module boundaries", { concurrency: true }, () => {
         .sort();
     const native = (loader, specifiers) =>
       specifiers.map((specifier) => relative(root, loader.resolve(specifier))).sort();
-    const report = await check();
     assert.equal(report.ok, true, JSON.stringify(report.violations));
     assert.deepEqual(
       targets("load.mjs", ["require", "dynamic-import"]),
@@ -1179,7 +1185,7 @@ describe("module boundaries", { concurrency: true }, () => {
       createRequire(join(alias, consumer)).resolve(join(alias, target)),
     );
     assert.equal(nativeTarget, target);
-    const reports = await Promise.all(
+    const reports = await settle(
       [root, alias].map(async (selectedRoot) => {
         const error = await failure(
           node([cli, "--root", selectedRoot, "--policy", "policy.json", "--json"]),
@@ -1303,7 +1309,7 @@ describe("module boundaries", { concurrency: true }, () => {
       await write(source, code);
     }
     // Native Node must choose the nearer installed package, not the registered decoy.
-    const outputs = await Promise.all(Object.keys(sources).map((source) => native(source)));
+    const outputs = await settle(Object.keys(sources).map((source) => native(source)));
     assert.deepEqual(outputs, Array(outputs.length).fill("shadow"));
     const report = await check();
     for (const source of Object.keys(sources)) {
@@ -1398,7 +1404,7 @@ describe("module boundaries", { concurrency: true }, () => {
       ["cts", "commonjs"],
     ];
     const base = "apps/app/src/scoped";
-    const observed = await Promise.all(
+    const observed = await settle(
       variants.map(async ([extension, type]) => {
         const consumer = `${base}/b.${extension}`;
         const secret = `${base}/secret.${extension}`;
@@ -1450,7 +1456,7 @@ describe("module boundaries", { concurrency: true }, () => {
   test("uses the nearest unnamed package scope for CLI CommonJS loaders and extension overrides", async (t) => {
     const base = "apps/app/src/nested";
     const target = `${base}/secret.cjs`;
-    await Promise.all(
+    await settle(
       [
         ["js", "module", "commonjs", true],
         ["js", "commonjs", "module", false],
@@ -1492,7 +1498,7 @@ describe("module boundaries", { concurrency: true }, () => {
           probe,
           'console.log(JSON.stringify({ loader: typeof module !== "undefined" && typeof module.require === "function", target: typeof require === "function" ? require.resolve("./secret.cjs") : null }));',
         );
-        const [output, result] = await Promise.all([
+        const [output, result] = await settle([
           native(probe),
           verify(["--json"]).catch((error) => {
             assert.equal(error.code, 1);
@@ -1822,7 +1828,7 @@ describe("module boundaries", { concurrency: true }, () => {
 
   test("rejects empty source selections instead of reporting a passing boundary check", async (t) => {
     // An empty policy or directory must not make CI report a successful scan.
-    await Promise.all(
+    await settle(
       [[], ["empty"]].map(async (sourceRoots) => {
         const { root, check, cli: verify } = await workspace(t, { sourceRoots, packages: [] });
         await mkdir(join(root, "empty"));
@@ -1846,9 +1852,7 @@ describe("module boundaries", { concurrency: true }, () => {
     delete typo.cycles;
     await assert.rejects(check({ policy: typo }), /Unknown policy field/);
     await write("policy.json", JSON.stringify(typo));
-    for (const error of await Promise.all(
-      [[], ["--json"]].map((json) => failure(verify(json), 2)),
-    )) {
+    for (const error of await settle([[], ["--json"]].map((json) => failure(verify(json), 2)))) {
       assert.match(error.stderr, /Unknown policy field/);
     }
     await assert.rejects(
@@ -1878,7 +1882,7 @@ describe("module boundaries", { concurrency: true }, () => {
     await write("apps/app/src/invalid.mjs", 'import "./missing-a.mjs"; import "./missing-b.mjs";');
     await write("malformed.json", "{");
     await write("invalid.json", JSON.stringify({ ...policy, diagnosticLimit: 0 }));
-    const [text, json, ...configuration] = await Promise.all([
+    const [text, json, ...configuration] = await settle([
       failure(verify(), 1),
       failure(verify(["--json"]), 1),
       ...[
@@ -1968,9 +1972,7 @@ describe("module boundaries", { concurrency: true }, () => {
     const unknown = await check();
     assert.match(violation(unknown, source).specifier, /^unknown:sha256:/);
     assert.equal(JSON.stringify(unknown).includes("PRIVATE_EXPRESSION_MARKER"), false);
-    for (const error of await Promise.all(
-      [[], ["--json"]].map((json) => failure(verify(json), 1)),
-    )) {
+    for (const error of await settle([[], ["--json"]].map((json) => failure(verify(json), 1)))) {
       assert.equal((error.stdout + error.stderr).includes("PRIVATE_EXPRESSION_MARKER"), false);
     }
   });
@@ -2185,7 +2187,7 @@ console.log((await import(select())).default);
         `\nconst { target } = { target: value79 };\n${load("target")}`,
     };
     // Each form gets its own workspace, so the forms run concurrently.
-    await Promise.all(
+    await settle(
       Object.entries(forms).map(([name, makeSource]) =>
         t.test(name, async (st) => {
           const { write, check, native, observe, decoys } = await workspace(st, {
@@ -2232,7 +2234,7 @@ console.log((await import(select())).default);
     const source = "apps/app/src/public/delete-env.mjs";
     const env = { ...process.env, BOUNDARY_SELECTED: "./secret.mjs" };
     // Dot and computed deletes use separate workspaces and run concurrently.
-    await Promise.all(
+    await settle(
       [false, true].map(async (computed) => {
         const { write, check, native, observe, decoys } = await workspace(t);
         await decoys("secret.mjs");
@@ -2301,19 +2303,17 @@ console.log((await import(select())).default);
       assert.equal(await native(source), "PUBLIC");
       // Exposing Module can mutate its loader, so use a non-exposing positive control below.
     }
-    await open(
-      source,
-      'console.log(require("./secret.cjs"), module.require("./secret.cjs"));',
-      avoid,
-      "PUBLIC PUBLIC",
-    );
+    await open(source, 'console.log(require("./secret.cjs"), module.require("./secret.cjs"));', {
+      to: avoid,
+      output: "PUBLIC PUBLIC",
+    });
     const load =
       'console.log((await import(new URL("./secret.mjs", import.meta.url).href)).default);';
     for (const name of ["URL", "global", "globalThis"]) {
       await open(
         esm,
         `const {${name}: value} = JSON.parse('{"${name}":false}'); void value; ${load}`,
-        "apps/app/src/public/secret.mjs",
+        { to: "apps/app/src/public/secret.mjs" },
       );
     }
     await write("apps/app/src/private/secret.mjs", 'export default "PRIVATE";');
