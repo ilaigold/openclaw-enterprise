@@ -11,7 +11,9 @@ test(
     // This child owns only local fixture services. Its intentionally unknown token
     // cannot be disposed, so the parent terminates and joins the disposable process.
     // The killed child cannot remove its temporary directories, so it gets a TMPDIR
-    // the parent owns, short enough for the control socket the child binds there.
+    // the parent owns. `longest` mirrors createServiceConfiguration's
+    // socketDirectory(t, "rcs-") in the child, so that call keeps its directory here
+    // instead of falling back to /tmp.
     const temporaryRoot = await socketDirectory(t, "rcs-uncertain-", {
       longest: "rcs-XXXXXX/control-relay.sock",
     });
