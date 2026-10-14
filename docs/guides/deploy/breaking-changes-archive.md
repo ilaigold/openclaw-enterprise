@@ -1,97 +1,253 @@
 # Earlier breaking-change notices
 
-These [breaking-change notices](breaking-changes.md) are dated before
-2026-10-09. They still apply when you upgrade from a source commit older than
-their date. Entries are newest first. Steps marked _untested_ have not been run
-against a real Installation.
+These [breaking-change notices](breaking-changes.md) are older than the ones
+on that page and newer than the
+[notices before 2026-10-12](breaking-changes-before-2026-10-12.md). They still
+apply when you upgrade from a source commit older than their date. Entries are
+newest first. Steps marked _untested_ have not been run against a real
+Installation. When this page nears the word limit, its oldest notices move to a
+new page named for the date they precede.
 
-## 2026-10-07: migration 0049 refuses managed ChatGPT service-account Agents
+## 2026-10-13: execution API CIDRs must be explicit and nonzero
 
-**What breaks.** Since #1648 (`94957cedc`), migration
-`0049_codex_pat_sources` stops the upgrade with SQLSTATE `23514`
-(`Unsupported legacy managed PAT authentication`) when any Agent, Agent
-revision or queued provisioning request still uses the retired
-`chatgpt_service_account` Harness auth. The method is now `codex_pat` with a
-service-account source. The old release keeps running; nothing is changed.
+**What breaks.** `helm upgrade` fails when a saved `executionCluster.apiCidrs`
+entry is `0.0.0.0/0`, `::/0`, or a leading-zero address such as `010.44.0.2/32`.
+Those values used to render. A `/0` became egress to any address on the
+execution API port, and the apiserver accepted the leading-zero form with a
+warning. The upgrade now stops before it writes that policy.
 
-**Who is affected.** Installations that ever deployed an Agent with
-`harnessAuth.method` `chatgpt_service_account`, including Agents since changed
-to another method, because their old revisions keep it.
+**Who is affected.** Saved releases that use one of those spellings. A canonical
+IPv4 CIDR with prefix 1 through 32, such as `192.0.2.0/28`, and a canonical
+IPv6 CIDR with a nonzero prefix, such as `2001:db8::/64`, still upgrade. A
+disabled execution cluster is not checked.
 
-**How to tell.** Before upgrading, on the old release:
+**How to tell.** Helm stops with
+`executionCluster.apiCidrs requires an explicit IPv4 or IPv6 CIDR with a nonzero prefix`.
 
-```bash
-occ agent list -o json | jq -r '.[] | select(.harnessAuth.method == "chatgpt_service_account") | .id'
-```
+**Steps.** Replace `0.0.0.0/0` or `::/0` with the execution API addresses you
+mean to allow. Rewrite `010.44.0.2/32` as `10.44.0.2/32`. Upgrade again.
 
-Run it in every Namespace (`--namespace`). An Agent changed away from the method
-still has old revisions; check them with
-`GET /namespaces/<id>/agents/<agent>/revisions`.
+## 2026-10-13: OpenShell gateway readiness requires timeoutMs
 
-**Steps.** Deleting an Agent removes its revisions and provisioning requests,
-which clears the refusal.
+**What breaks.** Controller startup fails when `gateway.readiness` is set and
+`timeoutMs` is omitted. That configuration starts today. The field must be a
+positive safe integer. Omitted readiness is unchanged.
 
-1. Record each affected Agent's settings (`occ agent get <id> -o json`) and
-   workspace files.
-2. Delete it on the old release (`occ agent delete <id>`) and wait until
-   `occ agent list` no longer shows it.
-3. Upgrade.
-4. Re-create the Agent with
-   `"harnessAuth": {"method": "codex_pat", "source": {"kind": "service_account", "namespaceId": "<ns>", "id": "<sa>"}}`,
-   then deploy it.
+**Who is affected.** Installations, and the real k3d helper, that set
+`gateway.readiness` with only `serviceName` and `podSelector`.
 
-_Untested_ on a real Installation. The split-layout script below does steps 1, 2
-and 4 for every Agent it moves.
+**How to tell.** Startup logs `startup-error` with code `STARTUP_FAILED`. The
+Installation loader reports `OpenShell gateway readiness timeout must be a
+positive safe integer.` The message does not name `timeoutMs`.
 
-## 2026-10-05: split-layout tenants block the controller upgrade
+**Steps.** Set `gateway.readiness.timeoutMs` to a positive millisecond window.
+The real helper uses 120000. Then start again.
 
-**What breaks.** Since #925 (`dd344a97c`), a single-cluster Installation keeps
-each Namespace's Gateways and Harnesses in one tenant namespace. Releases before
-it kept Gateways, their state and the canonical Secrets in a separate
-`oce-gateways-<hash>` namespace. The current API and worker refuse to start
-while such a namespace lacks the tenant label, and the
-[image upgrade helper](production-upgrade.md) stops at its startup preflight
-(`Existing split-layout Gateway storage prevents this single-cluster upgrade`)
-before it changes anything. See
-[split-layout installations](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+## 2026-10-13: demo cluster CIDRs must be one canonical IPv4 host
 
-**Who is affected.** Single-cluster Installations created by the 2026-09-28
-release, or by any main before `dd344a97c`, with at least one Namespace.
-Bootstrap creates `default`, so nearly all are. The experimental
-two-cluster profile is not affected.
+**What breaks.** The observability demo `helm upgrade` fails when
+`cluster.cidrs` is not one canonical IPv4 `/32`.
 
-**How to tell.**
+**Who is affected.** Demo releases whose saved `cluster.cidrs` are not that
+form.
 
-```bash
-kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace
-```
+**How to tell.** Helm stops in `prometheus.yaml` with `cluster.cidrs requires
+exact IPv4 /32 endpoints`.
 
-A row with an empty `NAMESPACE` column is a split-layout tenant.
+**Steps.** Write the canonical spelling (`010.0.0.1/32` becomes `10.0.0.1/32`)
+and upgrade again.
 
-**Steps.** Adopt each tenant in place with the
-[split-layout upgrade](split-layout-upgrade.md): each `oce-gateways-<hash>`
-namespace becomes its tenant's namespace, and IDs, Namespace names, revisions,
-Secrets, service-account credentials, chat history and Harness workspaces all
-stay. Tenants that can't be adopted use the export fallback on the same page,
-which re-creates them under new IDs.
+## 2026-10-13: OpenShell network policy names must be unique
 
-## 2026-10-01: released dedicated Agents fail to redeploy
+**What breaks.** Controller startup refuses an Installation whose
+`policy.networkPolicies` repeat a name, or name a policy
+`workspace-node-enrollment`. Those configurations start today. A duplicate name
+keeps only the last rule. A policy named `workspace-node-enrollment` is replaced
+when a workspace-node binding exists.
 
-**What breaks.** Since `7e831ba37`, the dedicated Harness init container makes
-its `workspace` and `generated-images` directories private (`0700`). Agents
-deployed by the 2026-09-28 release have those directories owned by root, so on
-the first redeploy the init container fails with `EPERM` and the Harness stays
-in `Init:Error`. The upgrade helper's runtime step redeploys every running Agent.
+**Who is affected.** Installations with duplicate policy names, or with a policy
+named `workspace-node-enrollment`.
 
-**Who is affected.** Installations whose dedicated Agents were deployed by the
-2026-09-28 release and are redeployed by a controller from `7e831ba37` up to,
-but not including, #1652 (`42c43fcd0`, 2026-10-09).
+**How to tell.** Startup logs `startup-error` with code
+`OPENSHELL_NETWORK_POLICY_NAME_REJECTED` and reason `rename-or-merge`. The log
+does not include the policy name. Loading the Installation configuration names
+the duplicate or reserved policy.
 
-**How to tell.** The Harness Pod's `prepare-private-state` container exits with
-`EPERM: operation not permitted, chmod '/harness-workspace-state/workspace'`.
+**Steps.** Rename or merge duplicate `policy.networkPolicies` names. Rename a
+policy called `workspace-node-enrollment`. Keep each policy's binaries and
+endpoints. _untested_ against a live Installation.
 
-**Steps.** Upgrade the controller to `42c43fcd0` or later, then deploy the
-Agent again (`occ agent deploy <id>`). The init container moves each old
-directory aside, recreates it as uid 1000 with mode `0700` and moves the files
-back. Entries it cannot move back are left in `.workspace.kubelet-created` or
-`.generated-images.kubelet-created` beside it and named in the init log.
+## 2026-10-13: OpenShell `openai` credential sources need replacing
+
+**What breaks.** Each OpenShell credential source now owns its provider profile.
+An `openai` source registered by an earlier build points its provider at the
+shared `oce-openai` profile, so OCC no longer treats that provider as the
+source's. A deployment that lists the source fails. Deleting the source through
+OCC leaves it `deleting` until its provider is removed by hand.
+
+**Who is affected.** Installations with OpenShell `openai` credential sources.
+`bearer-token` and OAuth2 sources already owned their profiles and are
+unaffected.
+
+**How to tell.** The source's `status` is `failed`, with "The OpenShell
+provider is not owned by this source."
+
+**Steps.** After upgrading, replace each such source, _untested_:
+
+1. Register a replacement `openai` source from the same Secret. It gets its own
+   profile.
+2. For each Agent bound to the old source:
+   - Grant the Agent's service principal `operate` on the replacement.
+   - Update the Agent so that `credentialSources` lists the replacement instead
+     of the old source, and `harnessAuth.sourceId` names the replacement.
+   - Deploy it, and wait until the new revision is active.
+
+   OCC refuses to delete a source with `409` while an Agent, its active
+   revision, or a pending deployment still references it.
+
+3. In the Namespace's OpenShell Workspace, delete each old source's provider:
+   the one labeled `openclaw.dev/credential-source-id` with the source's ID.
+   OpenShell refuses while a Sandbox still lists it, so the old revision's
+   Sandbox must be gone. Then delete the old source through OCC. A `404` while
+   `GET` shows `deleting` means the provider remains; a
+   `409 CREDENTIAL_WITHDRAWAL_IN_PROGRESS` means retry after withdrawal work
+   finishes.
+4. Once no old `openai` provider remains, delete the `oce-openai` profile.
+   OpenShell refuses while a provider still uses it.
+
+## 2026-10-12: model credentials in provider headers and request auth
+
+**What breaks.** On Kubernetes Compute, Configuration create and update,
+provisioning, Preset saves, Agent create and update, and deployment answer
+`400` naming the setting for any `models.providers.<provider>`, even one no
+model setting selects, that has:
+
+- a credential header in `headers` (on the provider or one of its `models`)
+  or `request.headers`: a name whose last hyphen- or underscore-separated
+  word, after any trailing number, is `auth`, `authorization`, `bearer`,
+  `cookie`, `credential`, `passcode`, `passphrase`, `password`, `secret`,
+  `signature` or `token` (or a plural), or that ends in `key` or `keys` except
+  an idempotency or cache key, such as `Proxy-Authorization`, `x-goog-api-key`,
+  `X-Auth-Key`, `x-auth-token` or `Cookie` (widened on 2026-10-13, below);
+- a header name that is not a valid HTTP field name (spaces, zero-width or
+  non-ASCII characters);
+- a `request.auth` other than exactly `{mode: "provider-default"}`.
+
+Every Configuration Driver, on every Compute, also answers `400` for a literal
+where a reference is required: those headers (on models too),
+`request.auth.token` and `request.auth.value`, and the `cert`, `key` and
+`passphrase` of `request.tls` and `request.proxy.tls`. It refuses a
+`request.proxy.url` with a user name or password. Preset saves run the
+Kubernetes rules before the Configuration Driver's, so a literal gets the
+Kubernetes message.
+
+**Who is affected.** Configurations that carry such headers, `request.auth`,
+TLS client keys or proxy credentials. A stored Configuration still reads and
+an edit can replace it; saving it unchanged and deployment refuse it with the
+same message.
+
+**How to tell.** Kubernetes Compute's `400` names
+`models.providers.<provider>.headers`, `.request.headers` or `.request.auth`.
+The Configuration Driver's names a JSON pointer, such as
+`/models/providers/<provider>/request/auth/token holds a credential value inline`.
+
+**Steps.** Read the Configuration, then save it without the refused setting.
+The Agent's Harness authentication is the only supported path for model
+credentials; select the credential there after that save, since an Agent save
+that names the Configuration is refused with the same message until then.
+
+- On Kubernetes Compute, remove every credential header and any `request.auth`
+  other than `{mode: "provider-default"}`. A `${NAME}` reference is refused
+  there too.
+- On other Compute, the Configuration Driver accepts a `${NAME}` reference in
+  those slots instead of a literal.
+- For TLS client keys and proxy credentials, on any Compute, store the value
+  as a Secret and write a `${NAME}` reference.
+
+## 2026-10-12: repository credential images follow the control-plane image rule
+
+**What breaks.** The chart (since #2221) and now profile preflight refuse a
+`repositoryCredentials.image` or `repository.image` that does not start with a
+letter or digit or that holds a character other than letters, digits, `.`,
+`_`, `:`, `/` or `-` before the `@sha256:` digest, as for the controller image.
+
+**Who is affected.** Hand-written values or profile inputs with such a
+reference. Registry references rarely use such names.
+
+**How to tell.** Rendering fails with `repositoryCredentials.image must be an
+approved immutable SHA-256 image reference`; preflight names `repository.image`.
+
+**Steps.** Use the image's registry reference with its digest.
+
+## 2026-10-12: SSH Compute names its Harness authentication rule
+
+**What breaks.** On SSH Compute, an embedded OpenClaw Agent whose
+`harnessAuth.method` is not `runtime` gets `400` naming `harnessAuth.method`,
+where it got a fixed `409`: at deployment, and at Agent create and update when
+they check the binding. Nothing new is refused.
+
+**Who is affected.** Clients that branch on the `409`.
+
+**How to tell.** The `400` says the method must be `runtime`.
+
+**Steps.** Set `harnessAuth` to `{ "method": "runtime" }`.
+
+## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
+
+**What breaks.** `helm upgrade` of the observability demo fails when
+`cluster.port` or `occ.metricsPort` is not a decimal integer from 1 through
+65535 with no leading zero. A saved string `"010"` used to install, and
+Kubernetes applied port 8. The upgrade now stops before it writes that policy.
+
+**Who is affected.** Demo releases whose saved values use a leading zero or a
+port outside that range. Defaults 443 and 9464, and an ordinary decimal such as
+6443, upgrade unchanged.
+
+**How to tell.** Helm stops in `prometheus.yaml` with
+`cluster.port must be an integer TCP port from 1 to 65535`, or the same
+sentence for `occ.metricsPort`.
+
+**Steps.** Set the field to the decimal Kubernetes already applied (`8` for a
+saved `"010"`) and upgrade again. The NetworkPolicy port stays that decimal.
+The [demo install](../observability/demo.md#install-private-backends) states the
+same contract.
+
+## 2026-10-12: cluster and execution API ports must be canonical decimals
+
+**What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`
+values that are not a canonical decimal from 1 to 65535 with at most five
+digits. `010` and integers Sprig cannot convert, such as
+`9223372036854775808`, no longer render.
+
+**Who is affected.** Installations that set either port with a leading zero.
+
+**How to tell.** Helm names `cluster.port` or `executionCluster.apiPort` and
+says it must be an integer TCP port from 1 to 65535.
+
+**Steps.** Replace a leading-zero value with its effective decimal port (`010`
+becomes `8`) before the next Helm upgrade. _untested_ against a live release.
+
+## 2026-10-12: Sandbox workspace files and provisioning repository refusals
+
+**What breaks.**
+
+- With a Sandbox Driver selected (OpenShell), Agent create and provisioning with
+  `initialWorkspaceFiles`, and Agent update and deployment while those files
+  are pending, answer `409` naming the Sandbox. Before, dedicated Codex saved
+  and its first deployment failed, and dedicated OpenClaw got a `400` naming
+  `agents.defaults.workspace` or `agents.entries.main.workspace`, which the
+  Sandbox had set.
+- The Agent provisioning request, and its retry, answer `409` for
+  `repositoryBindings` that the Compute topology cannot deliver, with Agent
+  create's message. Before, the request answered `202` and the work failed.
+- Newly accepted on Kubernetes and Docker Compute: an `agents.entries` roster
+  key of `Main` (any letter case) with initial workspace files.
+
+**Who is affected.** OpenShell Installations that create Agents with initial
+workspace files, and provisioning clients that send repository bindings on a
+topology without repository credential delivery.
+
+**How to tell.** The `409` message names the Sandbox or repository credentials.
+
+**Steps.** Create the Agent without `initialWorkspaceFiles`, or without
+`repositoryBindings`.

@@ -1265,6 +1265,7 @@ test("Agent reads return the bound credentialSources; revision reads return only
     id: "credential-gateway-api",
     capability: "credential_gateway",
     implementation: "test-recording-gateway",
+    validateSourceConfig() {},
     async listSourceTypes() {
       return [
         {
@@ -1407,6 +1408,7 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
     id: "credential-gateway-refresh-api",
     capability: "credential_gateway",
     implementation: "test-recording-gateway",
+    validateSourceConfig() {},
     async listSourceTypes() {
       return [
         {
@@ -2782,6 +2784,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     namespaceId: namespace.id,
     agentId: agent.id,
     status: "queued",
+    cleanup: null,
     error: null,
     warnings: [],
     progress: { lastAttempt: null, nextAttemptAt: new Date(0).toISOString() },
@@ -2814,6 +2817,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     namespaceId: namespace.id,
     agentId: agent.id,
     status: "failed",
+    cleanup: null,
     error: {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       message: "Deployment convergence deadline exceeded.",
@@ -3389,9 +3393,10 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(created.data.plugins, initialPlugins);
   assert.deepEqual(created.data.pluginApprovers, []);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
-  // This Plugin Driver has no Configuration check, so the save does not read the values: an
-  // unavailable or slow Configuration Driver must not block saves that have nothing to check.
-  assert.equal(configurationReads, readsBeforeSave);
+  // This Plugin Driver has no Configuration check, but Agent save checks the Agent against its
+  // Configuration as deployment would (the Harness and its execution mode), so it reads the
+  // values once, shared by every check.
+  assert.equal(configurationReads, readsBeforeSave + 1);
 
   const saved = await controller.request(
     "GET",
@@ -5504,10 +5509,11 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
 
 test("Agent provisioning API validates inline configuration with existing Secret references", async () => {
   const computeDriver = createProvisioningCapableComputeDriver();
+  const configurationDriver = createProvisioningCapableConfigurationDriver();
   const logLines = [];
   const fixture = await createInjectedFixture({
     computeDriver,
-    configurationDriver: createProvisioningCapableConfigurationDriver(),
+    configurationDriver,
     logger: createOccLogger({
       component: "occ-api",
       level: "info",
@@ -5756,6 +5762,120 @@ test("Agent provisioning API validates inline configuration with existing Secret
         'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
     },
   );
+  // Topology-independent Kubernetes rules refuse at provisioning with the Configuration save
+  // message (finding 1116), before any Agent or Configuration is stored.
+  computeDriver.validateConfiguration = (...args) => kubernetes.validateConfiguration(...args);
+  // Finding 1207: a Preset header name that waits on a variable without a default saves on
+  // Kubernetes Compute, as on every other Compute; the filled name is checked at provisioning.
+  configurationDriver.validateValues = async () => {};
+  const placeholder = "{{ vars.header }}";
+  const preset = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/presets`,
+    {
+      body: {
+        name: "Header variable",
+        template: {
+          variables: { header: { type: "string" } },
+          configuration: {
+            values: {
+              ...model,
+              models: {
+                providers: {
+                  openai: {
+                    headers: { [placeholder]: "v" },
+                    request: { headers: { [placeholder]: "v" } },
+                    models: [{ id: "m", headers: { [placeholder]: "v" } }],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  );
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  delete configurationDriver.validateValues;
+  const agentsBefore = (
+    await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)
+  ).length;
+  for (const [values, message] of [
+    [
+      { ...model, channels: { discord: { enabled: true } } },
+      "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+    ],
+    [
+      { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
+      "Configuration setting env.OPENAI_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
+    ],
+    [
+      {
+        ...model,
+        models: {
+          providers: { openai: { request: { headers: { Authorization: "Bearer ${TOKEN}" } } } },
+        },
+      },
+      'Configuration setting models.providers.openai.request.headers must not set the credential header "Authorization" (its name marks a credential): model credentials come from the Agent\'s Harness authentication binding.',
+    ],
+    // Finding 1311: provisioning runs the agents roster rules Configuration save runs, with the
+    // same text, so a roster every deployment refuses is refused before anything is stored.
+    [
+      { agents: { ...model.agents, entries: { "main!": {} } } },
+      'The OpenClaw Gateway rejects the Agent ID in agents.entries["main!"]: use up to 64 letters, digits, _ or -, not starting with -.',
+    ],
+    [
+      { agents: { ...model.agents, entries: { main: {}, helper: {} } } },
+      'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
+    ],
+  ]) {
+    const refused = await injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      { body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }) },
+    );
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(
+      { code: refused.body.error.code, message: refused.body.error.message },
+      { code: "INVALID_REQUEST", message },
+    );
+  }
+  // The filled Preset is checked at provisioning. Finding 1208: the refusal names the header,
+  // never its value, whatever word the rule matched.
+  const sentinel = `synthetic-filled-header-${randomUUID()}`;
+  for (const name of ["X-Upstream-Pwd", "X-Signature-Sha256"]) {
+    const filled = await injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      {
+        body: provisioningRequestBody(namespace.data.id, secrets, {
+          configuration: {
+            values: {
+              ...model,
+              models: { providers: { openai: { headers: { [name]: sentinel } } } },
+            },
+          },
+        }),
+      },
+    );
+    assert.equal(filled.status, 400, JSON.stringify(filled.body));
+    assert.deepEqual(
+      { code: filled.body.error.code, message: filled.body.error.message },
+      {
+        code: "INVALID_REQUEST",
+        message: `Configuration setting models.providers.openai.headers must not set the credential header "${name}" (its name marks a credential): model credentials come from the Agent's Harness authentication binding.`,
+      },
+    );
+    assert.equal(JSON.stringify(filled.body).includes(sentinel), false);
+  }
+  assert.equal(
+    (await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)).length,
+    agentsBefore,
+  );
+  delete computeDriver.validateConfiguration;
   // A refusal the caller cannot fix (here the Installation enables dedicated runtime storage
   // without gateway routing) keeps fixed text, since its reason names Installation settings.
   // The API log names it with the request ID for the operator.
@@ -6814,7 +6934,7 @@ test("authorization rejects sparse decision evidence", async () => {
   assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
-test("deployment refuses the retired Codex untrusted approval policy across Compute Drivers", async (t) => {
+test("deployment refuses a Codex approval policy the Gateway refuses across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
       // The API/state fixture owns lifecycle and credentials; the actual selected
@@ -6833,18 +6953,40 @@ test("deployment refuses the retired Codex untrusted approval policy across Comp
         namespace.id,
         "ready",
       );
+      const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
       // The pinned Gateway refuses untrusted at configuration load, with a doctor hint that
-      // cannot edit Compute's read-only configuration (finding 987).
-      for (const [name, approvalPolicy, expectedStatus] of [
-        ["untrusted", "untrusted", 409],
-        ["on-failure", "on-failure", 202],
-        ["omitted", undefined, 202],
+      // cannot edit Compute's read-only configuration (finding 987), and any value outside its
+      // enum; preparation refused those only after a dedicated deployment stopped the running
+      // revision (finding 1113). Configuration save refuses them now, so each is a row an older
+      // release saved, written past OCC.
+      for (const [name, approvalPolicy, message] of [
+        [
+          "untrusted",
+          "untrusted",
+          `Configuration setting ${setting} must not be "untrusted", which the OpenClaw runtime retired: use "on-request".`,
+        ],
+        [
+          "always",
+          "always",
+          `Configuration setting ${setting} must be "never", "on-request" or "on-failure".`,
+        ],
+        ["on-failure", "on-failure"],
+        ["omitted", undefined],
       ]) {
-        const agent = await createAgent(controller, namespace.id, `codex-approval-${name}`, {
-          plugins: {
-            entries: {
-              codex: {
-                config: { appServer: approvalPolicy === undefined ? {} : { approvalPolicy } },
+        const agent = await createAgent(controller, namespace.id, `codex-approval-${name}`);
+        const stored = fixture.configurationDriver.stored({
+          namespaceId: namespace.id,
+          id: agent.configurationId,
+        });
+        await fixture.configurationDriver.update({
+          ...stored,
+          values: {
+            ...stored.values,
+            plugins: {
+              entries: {
+                codex: {
+                  config: { appServer: approvalPolicy === undefined ? {} : { approvalPolicy } },
+                },
               },
             },
           },
@@ -6854,13 +6996,15 @@ test("deployment refuses the retired Codex untrusted approval policy across Comp
           "POST",
           `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
         );
-        assert.equal(result.status, expectedStatus, `${kind}: ${JSON.stringify(result.body)}`);
-        if (expectedStatus === 409) {
+        assert.equal(
+          result.status,
+          message === undefined ? 202 : 409,
+          `${kind}: ${JSON.stringify(result.body)}`,
+        );
+        if (message !== undefined) {
           assert.equal(result.body.error.code, "RESOURCE_CONFLICT");
-          assert.equal(
-            result.body.error.message,
-            'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
-          );
+          assert.equal(result.body.error.message, message);
+          // No revision is admitted, so the worker never stops the running one.
           const revisions = await controller.request(
             "GET",
             `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
@@ -7075,8 +7219,10 @@ test("deploy audit preserves its authorization decision and rolls back with appe
     yield "forged-iterator-value";
   };
   const computeDriver = createProvisioningCapableComputeDriver();
+  // Agent saves run this check too; only the deployment below swaps the IAM Driver.
+  let deploying = false;
   computeDriver.validateHarnessAuth = () => {
-    if (fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
+    if (!deploying || fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
       return;
     }
     sharedEvidence.push("mutated-after-authorization");
@@ -7112,6 +7258,7 @@ test("deploy audit preserves its authorization decision and rolls back with appe
 
   // Harness validation runs after OCC has checked deploy authorization. Changing
   // Driver selection here proves the audit uses that completed decision.
+  deploying = true;
   const deployed = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
@@ -7348,6 +7495,48 @@ test("runtime auth admits SSH revisions without source permissions but retains d
     effect: "deny",
   });
   assert.equal((await controller.request("POST", `${path}/deploy`)).status, 403);
+});
+
+test("SSH Compute names a Harness authentication method other than runtime at Agent save", async () => {
+  const computeDriver = new SshComputeDriver({
+    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+    hosts: { "auth-method": { address: "127.0.0.1", user: "root" } },
+    runtime: {
+      nodePath: "/usr/bin/node",
+      openclawPath: "/opt/openclaw/index.js",
+      user: "openclaw",
+      root: "/tmp/ssh-runtime-test",
+    },
+    network: { gatewayPortRange: { start: 18800, end: 18899 } },
+  });
+  const controller = await configuredController({ computeDriver });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "auth-method");
+  await controller.fixture.platformState.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configuration = await createConfiguration(
+    controller,
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+  );
+  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "model", value: "synthetic-model" },
+  });
+  assert.equal(secret.status, 201, JSON.stringify(secret.body));
+  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "API key Agent",
+      configurationId: configuration.id,
+      harnessAuth: { method: "api_key", source: secret.data.ref },
+    },
+  });
+  assert.equal(created.status, 400, JSON.stringify(created.body));
+  assert.equal(created.body.error.code, "INVALID_REQUEST");
+  assert.equal(
+    created.body.error.message,
+    "Agent setting harnessAuth.method must be runtime for embedded OpenClaw on SSH Compute: change harnessAuth.",
+  );
 });
 
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {
