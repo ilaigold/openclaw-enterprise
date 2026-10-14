@@ -310,9 +310,9 @@ func TestPrepareDevelopmentResolverUsesDockerDesktopBridgeResolverOnMacOS(t *tes
 		}
 	})
 
-	// The probe must pull nothing a fresh Mac would not pull for the cluster
-	// anyway. The fake engine answers only the expected image, so a probe of
-	// any other image fails and keeps k3d's default.
+	// The probe uses a runnable node image directly and the pinned K3s image for
+	// a k3d channel; the latter may require an additional pull. The fake engine
+	// answers only the expected image, so any other image keeps k3d's default.
 	for _, test := range []struct {
 		name, nodeImage, probeImage string
 	}{

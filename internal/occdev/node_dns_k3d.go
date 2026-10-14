@@ -156,9 +156,9 @@ func (r *runner) dockerDesktopBridgeResolver(ctx context.Context, nodeImage stri
 	return address
 }
 
-// probeDockerDesktopBridgeResolver runs the probe container from the profile's
-// node image, so a fresh host pulls no extra image. A k3d channel such as
-// +v1.35 is not an image Docker can run, so it uses the pinned K3s image.
+// probeDockerDesktopBridgeResolver uses the profile's node image when Docker can
+// run it. A k3d channel such as +v1.35 uses the pinned K3s image instead, which
+// may require an additional pull separate from the cluster's node image.
 func (r *runner) probeDockerDesktopBridgeResolver(ctx context.Context, nodeImage string) (string, error) {
 	system, err := r.output(ctx, r.engine, "info", "--format", "{{.OperatingSystem}}")
 	if err != nil || string(system) != "Docker Desktop" {
